@@ -1,42 +1,69 @@
 use std::str;
 
+#[derive(Debug)]
 enum RootStatement {
-    RFun(String, Vec<String>, Box<Statement>),
-}
-
-enum Statement {
-    SBlock(Vec<Box<Statement>>),
-    // Statement representing executing a single expr
-    SExpr(Box<Expr>),
-}
-
-enum Expr {
-    EApp(String, Vec<Box<Expr>>),
-    EVar(String),
-    EAdd(Box<Expr>, Box<Expr>),
+    Function(String, Vec<String>, Statement),
 }
 
 #[derive(Debug)]
-enum Res<T> {
-    // All parsing functions return (position_delta, value)
-    // All "parse_" functions should increment the context position be position_delta
-    // This makes it easy to rewind
-    Success(usize, T),
-    // Failed parsing should NEVER increase position
-    Failure(String),
+enum Statement {
+    // SBlock(Vec<Box<Statement>>),
+    // Statement representing executing a single expr
+    Expr(Expr),
+}
+
+#[derive(Debug)]
+enum Expr {
+    Id(String),
+    Operator(Op, Box<Expr>, Box<Expr>),
+    // App(String, Vec<Box<Expr>>),
+    // Var(String),
+}
+
+#[derive(Debug)]
+enum Op {
+    Add,
+    //Sub,
 }
 
 struct ParseContext<'a> {
     content: &'a [u8],
-    position: usize,
+    // Offset should only increment once we've parsed a "good" value
+    offset: usize,
+    // toklen is used to track the length of the current token
+    toklen: usize,
+    error: Option<String>,
 }
 
-fn parse_anychar(context: &mut ParseContext) -> Res<char> {
-    if context.position < context.content.len() {
-        context.position += 1;
-        Res::Success(1, context.content[context.position - 1] as char)
+impl ParseContext<'_> {
+    fn position(&self) -> usize {
+        self.offset + self.toklen
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        if self.position() < self.content.len() {
+            Some(self.content[self.position()] as char)
+        } else {
+            None
+        }
+    }
+
+    fn at_eof(&self) -> bool {
+        self.position() >= self.content.len()
+    }
+
+    fn has_error(&self) -> bool {
+        !self.error.is_none()
+    }
+}
+
+fn parse_anychar(c: &mut ParseContext) -> char {
+    if c.position() < c.content.len() {
+        c.toklen += 1;
+        c.content[c.offset + c.toklen - 1] as char
     } else {
-        Res::Failure("Hit EOF, no chars to parse".to_string())
+        c.error = Some("Hit EOF, cannot parse a character".to_string());
+        '\0'
     }
 }
 
@@ -55,48 +82,175 @@ fn alphanumeric_slice(slice: &[u8], offset: usize) -> &[u8] {
     &slice[offset..offset + len]
 }
 
-fn parse_id(context: &mut ParseContext) -> Res<String> {
-    match parse_anychar(context) {
-        Res::Success(position_delta, first_char) => {
-            if first_char.is_alphabetic() {
-                let name_bytes = alphanumeric_slice(context.content,
-                                                    context.position - 1);
-                let name = str::from_utf8(name_bytes)
-                    .expect("Invalid UTF8 character")
-                    .to_string();
-
-                context.position += name.len() - 1;
-                Res::Success(name.len(), name)
-            } else {
-                // Rewind
-                context.position -= position_delta;
-                Res::Failure("Expected alphabetic character".to_string())
-            }
-        },
-        Res::Failure(message) => Res::Failure(message)
+fn parse_char(c: &mut ParseContext, expected_char: char) {
+    if parse_anychar(c) != expected_char {
+        c.toklen -= 1;
+        c.error = Some(format!("Char {} not found", expected_char));
     }
 }
 
-fn parse_char(context: &mut ParseContext, expected_char: char) -> Res<char> {
-    match parse_anychar(context) {
-        Res::Success(position_delta, found_char) => {
-            if found_char == expected_char {
-                Res::Success(position_delta, found_char)
+fn parse_tok_char(c: &mut ParseContext, expected_char: char) {
+    parse_char(c, expected_char);
+
+    if !c.has_error() {
+        c.offset += c.toklen;
+    }
+    c.toklen = 0;
+}
+
+// Parse any amount of horizontal whitespace
+fn parse_hs(c: &mut ParseContext) {
+    while !c.at_eof() && c.content[c.offset] as char == ' ' {
+        c.offset += 1;
+    }
+}
+
+fn parse_tok_id(c: &mut ParseContext) -> String {
+    let first_char = parse_anychar(c);
+
+    if c.has_error() {
+        c.toklen = 0;
+        String::new()
+    } else if !first_char.is_alphabetic() {
+        c.error = Some("ID must begin with an alphabetic char".to_string());
+        c.toklen = 0;
+        String::new()
+    } else {
+        let name_bytes = alphanumeric_slice(c.content, c.position() - 1);
+        let name = str::from_utf8(name_bytes)
+            .expect("Invalid UTF8 character")
+            .to_string();
+
+        // We've parsed a token, so we reset the toklen
+        c.offset += name_bytes.len();
+        c.toklen = 0;
+        name
+    }
+}
+
+// Let the fun begin
+fn parse_fun(c: &mut ParseContext) -> Option<RootStatement> {
+    let name = parse_tok_id(c);
+    if c.has_error() {
+        return None;
+    }
+
+    parse_hs(c);
+    parse_tok_char(c, '(');
+    if c.has_error() {
+        return None;
+    }
+    parse_hs(c);
+
+    let mut args = Vec::<String>::new();
+
+    while !c.has_error() {
+        parse_hs(c);
+
+        let id = parse_tok_id(c);
+        if c.has_error() {
+            break;
+        }
+        args.push(id);
+
+        parse_hs(c);
+        parse_tok_char(c, ',');
+    }
+    // If there was an error, we want to look for the closing paren
+    // FIXME: Store the error in case we don't find a closing paren either
+    c.error = None;
+
+    parse_tok_char(c, ')');
+    if c.has_error() {
+        return None;
+    }
+    parse_hs(c);
+
+    let body = parse_statement(c);
+    if c.has_error() {
+        return None;
+    }
+
+    Some(RootStatement::Function(
+        name,
+        args,
+        body.unwrap()
+    ))
+}
+
+fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
+    let expr = parse_expr(c);
+    if c.has_error() {
+        return None;
+    }
+    parse_hs(c);
+    parse_tok_char(c, ';');
+    Some(Statement::Expr(expr.unwrap()))
+}
+
+fn parse_tok_op(c: &mut ParseContext) -> Option<Op> {
+    let op = match c.peek_char() {
+        Some('+') => Some(Op::Add),
+        _         => None,
+    };
+
+    if !op.is_none() {
+        c.offset += 1;
+    }
+    op
+}
+
+fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
+    let head = parse_expr_unchained(c);
+    parse_hs(c);
+
+    // Handle operator chaining
+    match parse_tok_op(c) {
+        Some(op) => {
+            parse_hs(c);
+            // TODO: Instead of recursion, aggregate in a loop
+            let rhs = parse_expr(c);
+
+            if c.has_error() {
+                None
             } else {
-                context.position -= position_delta;
-                Res::Failure(format!("Char {} not found", expected_char))
+                Some(Expr::Operator(
+                    op,
+                    Box::new(head.unwrap()),
+                    Box::new(rhs.unwrap())
+                ))
             }
         },
-        Res::Failure(message) => Res::Failure(message)
+        None => head
+    }
+}
+
+fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
+    parse_expr_id(c)
+}
+
+fn parse_expr_id(c: &mut ParseContext) -> Option<Expr> {
+    let id = parse_tok_id(c);
+    if c.has_error() {
+        None
+    } else {
+        Some(Expr::Id(id))
     }
 }
 
 pub fn parse(content: String) {
-    let mut context = ParseContext {
+    let mut c = ParseContext {
         content: content.as_bytes(),
-        position: 0,
+        offset: 0,
+        toklen: 0,
+        error: None,
     };
 
-    println!("{:?}", parse_id(&mut context));
-    println!("{:?}", parse_char(&mut context, '('));
+    println!("{:?}", parse_fun(&mut c));
+    println!("{:?}", c.offset);
+    println!("{:?}", c.error);
+
+    // println!("{:?}", parse_tok_id(&mut context));
+    // println!("{:?}, {:?}", context.offset, context.toklen);
+    // println!("{:?}", parse_char(&mut context, '('));
 }
