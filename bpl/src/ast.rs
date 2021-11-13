@@ -5,10 +5,10 @@ pub enum RootStatement {
 
 #[derive(Debug)]
 pub enum Statement {
-    // SBlock(Vec<Box<Statement>>),
     // Statement representing executing a single expr
     Expr(Expr),
     Return(Expr),
+    Block(Vec<Statement>),
 }
 
 #[derive(Debug)]

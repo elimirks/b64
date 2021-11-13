@@ -1,1 +1,2 @@
-add(a, b) return(a + b);
+add(a  , b , c)
+  return(a + b + b);

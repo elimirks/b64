@@ -1,7 +1,7 @@
 use crate::ast::*;
 
-fn gen_function(name: String, args: Vec<String>, body: Statement) {
-    println!("{}:\n", name);
+fn gen_function(name: String, _args: Vec<String>, body: Statement) {
+    println!("{}:\n  {:?}", name, body);
 }
 
 pub fn generate(statements: Vec<RootStatement>) {

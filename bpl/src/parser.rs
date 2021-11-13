@@ -2,6 +2,27 @@ use std::str;
 
 use crate::ast::*;
 
+#[derive(Debug, PartialEq)]
+enum Token {
+    Id(String),
+    Int(i64),
+    Return,
+    Auto,
+    Extern,
+    Eof,
+    While,
+    If,
+    Else,
+    Goto,
+    Switch,
+    Break,
+    LParen,
+    RParen,
+    Plus,
+    Semicolon,
+    Comma,
+}
+
 struct ParseContext<'a> {
     content: &'a [u8],
     // Offset should only increment once we've parsed a "good" value
@@ -30,6 +51,70 @@ impl ParseContext<'_> {
 
     fn has_error(&self) -> bool {
         !self.error.is_none()
+    }
+}
+
+// Returns None for invalid tokens
+// Returns Token::Eof for Eof (considered a valid token)
+fn get_tok(c: &mut ParseContext) -> Option<Token> {
+    // Seek past useless whitespace
+    parse_ws(c);
+
+    // First try tokenizing "word like" things
+    // Includes integers
+    let current_word = alphanumeric_slice(c.content, c.offset);
+    if current_word.len() > 0 {
+        c.offset += current_word.len();
+
+        let str_word = str::from_utf8(current_word)
+            .expect("Invalid UTF8 found in file");
+
+        match str_word {
+            "return" => return Some(Token::Return),
+            "auto"   => return Some(Token::Auto),
+            "extern" => return Some(Token::Extern),
+            "eof"    => return Some(Token::Eof),
+            "while"  => return Some(Token::While),
+            "if"     => return Some(Token::If),
+            "else"   => return Some(Token::Else),
+            "goto"   => return Some(Token::Goto),
+            "switch" => return Some(Token::Switch),
+            "break"  => return Some(Token::Break),
+            _ => {},
+        }
+
+        if (current_word[0] as char).is_alphabetic() {
+            Some(Token::Id(str_word.to_string()))
+        } else {
+            // Else it must be numeric
+            match str_word.parse::<i64>() {
+                Ok(num) => Some(Token::Int(num)),
+                _       => {
+                    c.offset -= current_word.len(); // Rewind
+                    c.error = Some(format!("Invalid int literal: {}", str_word));
+                    None
+                },
+            }
+        }
+    } else {
+        let next_char = c.peek_char();
+        if next_char.is_none() {
+            return Some(Token::Eof);
+        }
+        c.offset += 1;
+
+        match next_char.unwrap() {
+            '+' => Some(Token::Plus),
+            '(' => Some(Token::LParen),
+            ')' => Some(Token::RParen),
+            ';' => Some(Token::Semicolon),
+            ',' => Some(Token::Comma),
+            other => {
+                c.offset -= 1;
+                c.error = Some(format!("Invalid token: {}", other));
+                None
+            }
+        }
     }
 }
 
@@ -74,138 +159,121 @@ fn parse_tok_char(c: &mut ParseContext, expected_char: char) {
     c.toklen = 0;
 }
 
-// Parses a word token. Will fail if it's followed by something alphanumeric
-// TODO: Test this
-fn parse_tok_word(c: &mut ParseContext, s: &str) {
-    let end = c.offset + s.len();
-
-    if end >= c.content.len()
-            || &c.content[c.offset..end] != s.as_bytes()
-            || (end < c.content.len() && (c.content[end] as char).is_alphanumeric()) {
-        c.error = Some(format!("Could not parse {}", s));
-    } else {
-        c.offset += s.len();
-    }
-}
-
-// Parse any amount of horizontal whitespace
-fn parse_hs(c: &mut ParseContext) {
-    while !c.at_eof() && c.content[c.offset] as char == ' ' {
+// Parse any amount of whitespace
+fn parse_ws(c: &mut ParseContext) {
+    while !c.at_eof() {
+        match c.peek_char() {
+            Some(' ') => {},
+            Some('\n') => {},
+            _ => return,
+        }
         c.offset += 1;
     }
 }
 
-fn parse_tok_id(c: &mut ParseContext) -> String {
-    let first_char = parse_anychar(c);
-
-    if c.has_error() {
-        c.toklen = 0;
-        String::new()
-    } else if !first_char.is_alphabetic() {
-        c.error = Some("ID must begin with an alphabetic char".to_string());
-        c.toklen = 0;
-        String::new()
-    } else {
-        let name_bytes = alphanumeric_slice(c.content, c.position() - 1);
-        let name = str::from_utf8(name_bytes)
-            .expect("Invalid UTF8 character")
-            .to_string();
-
-        // We've parsed a token, so we reset the toklen
-        c.offset += name_bytes.len();
-        c.toklen = 0;
-        name
+// Returns false if it failed to parse the given token
+fn parse_tok(c: &mut ParseContext, expected: Token) -> bool {
+    match get_tok(c) {
+        Some(recieved) => {
+            if expected == recieved {
+                true
+            } else {
+                c.error = Some(format!("Expected {:?}, but {:?} was found",
+                                       expected, recieved));
+                false
+            }
+        },
+        None => false,
     }
 }
 
-// Let the fun begin
-fn parse_fun(c: &mut ParseContext) -> Option<RootStatement> {
-    let name = parse_tok_id(c);
-    if c.has_error() {
-        return None;
+fn parse_root_statement(c: &mut ParseContext) -> Option<RootStatement> {
+    match get_tok(c) {
+        // Root statements always begin with an id
+        Some(Token::Id(id)) => {
+            parse_fun(c, id)
+        },
+        _ => None,
     }
+}
 
-    parse_hs(c);
-    parse_tok_char(c, '(');
-    if c.has_error() {
+// Parses everything after the name of a function
+fn parse_fun(c: &mut ParseContext, name: String) -> Option<RootStatement> {
+    if !parse_tok(c, Token::LParen) {
         return None;
     }
-    parse_hs(c);
 
     let mut args = Vec::<String>::new();
+    // To alternate between comma & arg parsing
+    let mut should_parse_arg = true;
 
-    while !c.has_error() {
-        parse_hs(c);
-
-        let id = parse_tok_id(c);
-        if c.has_error() {
-            break;
+    // Parse args and closing paren
+    loop {
+        let tok = get_tok(c);
+        if tok.is_none() {
+            return None;
         }
-        args.push(id);
 
-        parse_hs(c);
-        parse_tok_char(c, ',');
+        match tok.unwrap() {
+            Token::RParen => break,
+            Token::Id(id) => {
+                if !should_parse_arg {
+                    c.error = Some("Comma expected, id found".to_string());
+                    return None;
+                }
+                args.push(id);
+                should_parse_arg = false;
+            },
+            Token::Comma => {
+                if should_parse_arg {
+                    c.error = Some("id expected, comma found".to_string());
+                    return None;
+                }
+                should_parse_arg = true;
+            },
+            other => {
+                c.error = Some(format!("Unexpected token: {:?}", other));
+                return None;
+            },
+        }
     }
-    // If there was an error, we want to look for the closing paren
-    // FIXME: Store the error in case we don't find a closing paren either
-    c.error = None;
-
-    parse_tok_char(c, ')');
-    if c.has_error() {
-        return None;
-    }
-    parse_hs(c);
 
     let body = parse_statement(c);
-    if c.has_error() {
+    if body.is_none() {
         return None;
     }
 
-    Some(RootStatement::Function(
-        name,
-        args,
-        body.unwrap()
-    ))
+    Some(RootStatement::Function(name, args, body.unwrap()))
 }
 
 fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
     let initial_offset = c.offset;
-
-    match parse_statement_return(c) {
-        Some(statement) => return Some(statement),
-        None => {
-            // rewind
-            c.offset = initial_offset;
-            c.error = None;
-        },
-    }
-
-    parse_statement_expr(c)
-}
-
-fn parse_statement_return(c: &mut ParseContext) -> Option<Statement> {
-    parse_tok_word(c, "return");
-    if c.has_error() {
+    let tok = get_tok(c);
+    if tok.is_none() {
         return None;
     }
-    parse_hs(c);
-    parse_tok_char(c, '(');
 
-    if c.has_error() {
+    match tok.unwrap() {
+        Token::Return => parse_statement_return(c),
+        _ => {
+            c.offset = initial_offset;
+            parse_statement_expr(c)
+        },
+    }
+}
+
+// Expects the `return` keyword to have been parsed already
+fn parse_statement_return(c: &mut ParseContext) -> Option<Statement> {
+    if !parse_tok(c, Token::LParen) {
         return None;
     }
 
     let expr = parse_expr(c);
-    if c.has_error() {
+    if expr.is_none() {
         return None;
     }
 
-    parse_hs(c);
-    parse_tok_char(c, ')');
-    parse_hs(c);
-    parse_tok_char(c, ';');
-
-    if c.has_error() {
+    if !parse_tok(c, Token::RParen) || !parse_tok(c, Token::Semicolon) {
         return None;
     }
 
@@ -214,63 +282,110 @@ fn parse_statement_return(c: &mut ParseContext) -> Option<Statement> {
 
 fn parse_statement_expr(c: &mut ParseContext) -> Option<Statement> {
     let expr = parse_expr(c);
-    if c.has_error() {
+    if expr.is_none() {
         return None;
     }
-    parse_hs(c);
+    parse_ws(c);
     parse_tok_char(c, ';');
     Some(Statement::Expr(expr.unwrap()))
 }
 
-fn parse_tok_op(c: &mut ParseContext) -> Option<Op> {
-    let op = match c.peek_char() {
-        Some('+') => Some(Op::Add),
-        _         => None,
-    };
-
-    if !op.is_none() {
-        c.offset += 1;
-    }
-    op
-}
-
 fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
-    let head = parse_expr_unchained(c);
-    parse_hs(c);
+    let first_expr = parse_expr_unchained(c);
+    if first_expr.is_none() {
+        return None;
+    }
 
     // Handle operator chaining
-    match parse_tok_op(c) {
-        Some(op) => {
-            parse_hs(c);
+    let initial_offset = c.offset;
+
+    let next_tok = get_tok(c);
+    if next_tok.is_none() {
+        return None;
+    }
+
+    match next_tok.unwrap() {
+        Token::Plus => {
             // TODO: Instead of recursion, aggregate in a loop
             // That will make it easy to implement operator precedence
             let rhs = parse_expr(c);
 
-            if c.has_error() {
+            if rhs.is_none() {
                 None
             } else {
                 Some(Expr::Operator(
-                    op,
-                    Box::new(head.unwrap()),
+                    Op::Add,
+                    Box::new(first_expr.unwrap()),
                     Box::new(rhs.unwrap())
                 ))
             }
         },
-        None => head
+        _ => {
+            c.offset = initial_offset;
+            first_expr
+        },
     }
 }
 
 fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
-    parse_expr_id(c)
+    let tok = get_tok(c);
+    if tok.is_none() {
+        return None;
+    }
+
+    match tok.unwrap() {
+        Token::Id(id) => Some(Expr::Id(id)),
+        other => {
+            c.error = Some(format!("Expected ID. {:?} found", other));
+            None
+        }
+    }
 }
 
-fn parse_expr_id(c: &mut ParseContext) -> Option<Expr> {
-    let id = parse_tok_id(c);
-    if c.has_error() {
-        None
-    } else {
-        Some(Expr::Id(id))
+/**
+ * Returns the (line,row number,column number) of the current offset
+ * Meant for displaying error messages
+ * It has to traverse the entire content to figure it out, so use this with care
+ */
+fn get_parse_position(c: &ParseContext) -> (String, usize, usize) {
+    let mut row = 1;
+    let mut col = 0;
+    let mut current_row_offset = 0;
+
+    for i in 0..c.offset {
+        if c.content[i] as char == '\n' {
+            row += 1;
+            col = 0;
+            current_row_offset = i + 1;
+        } else {
+            col += 1
+        }
     }
+
+    let mut row_end = current_row_offset;
+    while row_end < c.content.len() && c.content[row_end] as char != '\n' {
+        row_end += 1;
+    }
+
+    let line = str::from_utf8(&c.content[current_row_offset..row_end])
+        .unwrap()
+        .to_string();
+
+    (line, row, col)
+}
+
+fn print_error(c: &mut ParseContext) {
+    let (line, row, col) = get_parse_position(&c);
+    println!("Parse error: {}", c.error.as_ref().unwrap());
+
+    let prefix = format!("{} |", row);
+    println!("{}{}", prefix, line);
+
+    for i in 1..col + prefix.len() {
+        print!(" ");
+    }
+
+    println!("^")
 }
 
 pub fn parse(content: String) -> Vec<RootStatement> {
@@ -281,9 +396,9 @@ pub fn parse(content: String) -> Vec<RootStatement> {
         error: None,
     };
 
-    let root = parse_fun(&mut c);
+    let root = parse_root_statement(&mut c);
     if c.has_error() {
-        println!("Parse error: {}", c.error.unwrap());
+        print_error(&mut c);
         std::process::exit(1);
     }
     vec!(root.unwrap())
