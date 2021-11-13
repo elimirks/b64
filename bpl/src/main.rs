@@ -1,8 +1,12 @@
+mod ast;
+mod parser;
+mod codegen;
+
 use std::env;
 use std::fs;
 
-mod ast;
-use ast::*;
+use parser::parse;
+use codegen::generate;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -11,5 +15,5 @@ fn main() {
     let contents = fs::read_to_string(filename)
         .expect("Something went wrong reading the file");
 
-    parse(contents);
+    generate(parse(contents));
 }
