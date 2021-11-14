@@ -1,17 +1,7 @@
 use std::collections::HashMap;
 
 use crate::ast::*;
-
-// Where variables are located
-// In the future it should have Register(...) and Data(...)
-#[derive(Debug)]
-enum VarLoc {
-    // Stack position relative to %rbp
-    // +1 means the return address, +2 means 7th arg, +3 means 8th, ...
-    // As per x86_64 Linux calling conventions, the
-    // first 6 args are passed into functions by registers
-    Stack(i64),
-}
+use crate::memory::*;
 
 struct FunContext {
     variables: HashMap<String, VarLoc>,
@@ -72,21 +62,37 @@ fn alloc_args(c: &mut FunContext, args: &Vec<String>) {
     }
 }
 
-fn register_for_arg_num(num: usize) -> String {
+fn register_for_arg_num(num: usize) -> Reg {
     match num {
-        0 => "rdi".to_string(),
-        1 => "rsi".to_string(),
-        2 => "rdx".to_string(),
-        3 => "rcx".to_string(),
-        4 => "r8".to_string(),
-        5 => "r9".to_string(),
+        0 => Reg::Rdi,
+        1 => Reg::Rsi,
+        2 => Reg::Rdx,
+        3 => Reg::Rcx,
+        4 => Reg::R8,
+        5 => Reg::R9,
         _ => {
             panic!("arg num {} is not stored in a register", num)
         }
     }
 }
 
-fn gen_function(name: String, args: Vec<String>, body: Statement) {
+// Returns the location of the final expression
+fn gen_expr(c: &mut FunContext, expr: Expr) -> VarLoc {
+    VarLoc::Register(Reg::Rax)
+}
+
+fn gen_return(c: &mut FunContext, expr: Expr) {
+    // TODO: First generate the result of the expr ...
+}
+
+fn gen_fun_body(c: &mut FunContext, body: Statement) {
+    match body {
+        Statement::Return(expr) => gen_return(c, expr),
+        _ => {},
+    }
+}
+
+fn gen_fun(name: String, args: Vec<String>, body: Statement) {
     let mut c = FunContext {
         variables: HashMap::new(),
     };
@@ -111,7 +117,7 @@ pub fn generate(statements: Vec<RootStatement>) {
     for statement in statements {
         match statement {
             RootStatement::Function(name, args, body) => {
-                gen_function(name, args, body);
+                gen_fun(name, args, body);
             },
             //other => println!("Can't compile this yet: {:?}", other),
         }

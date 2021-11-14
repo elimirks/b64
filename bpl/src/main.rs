@@ -1,6 +1,7 @@
 mod ast;
-mod parser;
 mod codegen;
+mod memory;
+mod parser;
 
 use std::env;
 use std::fs;
