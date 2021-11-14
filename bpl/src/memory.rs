@@ -1,7 +1,7 @@
 use std::fmt;
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Hash, Eq)]
 pub enum Reg {
     Rax, Rbx, Rcx, Rdx,
     Rdi, Rsi, Rbp, Rsp,
@@ -9,8 +9,14 @@ pub enum Reg {
     R12, R13, R14, R15,
 }
 
-// Where variables are located
-// In the future it should have Register(...) and Data(...)
+// Caller save registers, except for %rsp
+pub const USABLE_CALLER_SAVE_REG: &'static [Reg] = &[
+    Reg::Rax, Reg::Rcx, Reg::Rdx, Reg::Rdi,
+    Reg::Rsi, Reg::R8,  Reg::R9,  Reg::R10,
+    Reg::R11,
+];
+
+// Where values are located
 #[derive(Clone, Copy, PartialEq)]
 pub enum Loc {
     // Stack position relative to %rbp
@@ -19,6 +25,7 @@ pub enum Loc {
     // first 6 args are passed into functions by registers
     Stack(i64),
     Register(Reg),
+    // "immediate" literal int values
     Immediate(i64),
 }
 

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::LinkedList;
+use std::collections::HashSet;
 
 use crate::ast::*;
 use crate::memory::*;
@@ -88,52 +89,81 @@ fn op_to_command(op: &Op) -> String {
     }
 }
 
-fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc) {
-    /*
-     * TODO: At some point this should get optimized...
-     * In many cases it needlessly relies on the stack.
-     * A better strategy would be to track which registers "rhs" needs.
-     * And only move the lhs result if it overlaps with the "rhs" registers.
-     * If all registers are used by "rhs", then in _that_ case push to the stack.
-     */
-    let (mut instructions, lhs_loc) = gen_expr(c, lhs);
-    instructions.push_back(format!("pushq {}", lhs_loc));
+fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    // Generate instructions for RHS first so we know which registers are safe
+    let (mut rhs_ins, rhs_loc, mut used_registers) = gen_expr(c, rhs);
+    let mut avail_registers: HashSet<&Reg> =
+        USABLE_CALLER_SAVE_REG.into_iter().collect();
+    for reg in &used_registers {
+        avail_registers.remove(&reg.clone());
+    }
 
-    let (mut rhs_instructions, rhs_loc) = gen_expr(c, rhs);
-    instructions.append(&mut rhs_instructions);
-
+    let (mut lhs_ins, lhs_loc, _) = gen_expr(c, lhs);
     let command = op_to_command(op);
 
-    let dest_loc = match rhs_loc {
-        Loc::Register(Reg::Rax) => Loc::Register(Reg::Rcx),
-        _                       => Loc::Register(Reg::Rax),
+    let dest_loc = match avail_registers.iter().next() {
+        // If there are safe registers available, store the lhs there
+        Some(dest_reg) => {
+            used_registers.push(**dest_reg);
+            lhs_ins.push_back(format!("movq {}, %{}", lhs_loc, dest_reg));
+            lhs_ins.append(&mut rhs_ins);
+            lhs_ins.push_back(format!("{} {}, %{}", command, rhs_loc, dest_reg));
+            Loc::Register(**dest_reg)
+        },
+        // Nowhere is safe! Store on the stack
+        None => {
+            let lhs_in_reg = match lhs_loc {
+                Loc::Register(_) => true,
+                _                => false,
+            };
+
+            if lhs_in_reg {
+                lhs_ins.push_back(format!("pushq {}", lhs_loc));
+            }
+
+            lhs_ins.append(&mut rhs_ins);
+
+            // Don't need to update used_registers because...
+            // we already know everything is used!
+            let dest_loc = match rhs_loc {
+                Loc::Register(Reg::Rax) => Loc::Register(Reg::Rcx),
+                _                       => Loc::Register(Reg::Rax),
+            };
+
+            if lhs_in_reg {
+                lhs_ins.push_back(format!("popq {}", dest_loc));
+            } else {
+                lhs_ins.push_back(format!("movq {},{}", lhs_loc, dest_loc));
+            }
+            lhs_ins.push_back(format!("{} {},{}", command, rhs_loc, dest_loc));
+            dest_loc
+        },
     };
 
-    instructions.push_back(format!("popq {}", dest_loc));
-    instructions.push_back(format!("{} {}, {}", command, rhs_loc, dest_loc));
-
-    (instructions, dest_loc)
+    (lhs_ins, dest_loc, used_registers)
 }
 
-// Returns the location of the final expression
-fn gen_expr<'a>(c: &'a FunContext, expr: &'a Expr) -> (LinkedList<String>, Loc) {
+/**
+ * @return (instructions, location, used_registers)
+ */
+fn gen_expr<'a>(c: &'a FunContext, expr: &'a Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
     match expr {
         Expr::Int(value) => {
-            (LinkedList::new(), Loc::Immediate(*value))
+            (LinkedList::new(), Loc::Immediate(*value), vec!())
         },
         Expr::Id(name) => {
             match c.variables.get(name) {
-                Some(location) => (LinkedList::new(), *location),
+                Some(location) => (LinkedList::new(), *location, vec!()),
                 None => panic!("Variable {} not in scope", name),
             }
         },
         Expr::Assignment(lhs_name, rhs) => {
-            let (mut instructions, rhs_loc) = gen_expr(c, rhs);
+            let (mut instructions, rhs_loc, used_registers) = gen_expr(c, rhs);
 
             match c.variables.get(lhs_name) {
                 Some(lhs_loc) => {
                     instructions.push_back(format!("movq {}, {}", rhs_loc, lhs_loc));
-                    (instructions, *lhs_loc)
+                    (instructions, *lhs_loc, used_registers)
                 },
                 None => panic!("Variable {} not in scope", lhs_name),
             }
@@ -143,7 +173,7 @@ fn gen_expr<'a>(c: &'a FunContext, expr: &'a Expr) -> (LinkedList<String>, Loc) 
 }
 
 fn gen_return(c: &FunContext, expr: &Expr) -> LinkedList<String> {
-    let (mut instructions, loc) = gen_expr(c, &expr);
+    let (mut instructions, loc, _) = gen_expr(c, &expr);
 
     // If the location is already rax, we don't need to move!
     if loc != Loc::Register(Reg::Rax) {
@@ -151,7 +181,7 @@ fn gen_return(c: &FunContext, expr: &Expr) -> LinkedList<String> {
     }
 
     instructions.push_back("leave".to_string());
-    instructions.push_back("retq".to_string());
+    instructions.push_back("ret".to_string());
     instructions
 }
 
@@ -168,7 +198,7 @@ fn gen_fun_body(c: &FunContext, body: &Statement) -> LinkedList<String> {
         },
         Statement::Auto(_) => LinkedList::new(),
         Statement::Expr(expr) => {
-            let (instructions, _) = gen_expr(c, expr);
+            let (instructions, _, _) = gen_expr(c, expr);
             instructions
         },
     }
@@ -192,10 +222,16 @@ fn gen_fun(args: Vec<String>, body: Statement) -> LinkedList<String> {
 
     instructions.append(&mut gen_fun_body(&c, &body));
 
-    instructions.push_back("leave".to_string());
-    instructions.push_back("retq".to_string());
+    let trailing_ret = match instructions.back() {
+        Some(instruction) => instruction == "ret",
+        _ => false,
+    };
 
-    //println!("Entry variable allocation: {:?}:", c.variables);
+    if !trailing_ret {
+        instructions.push_back("leave".to_string());
+        instructions.push_back("ret".to_string());
+    }
+
     instructions
 }
 

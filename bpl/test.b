@@ -1,7 +1,5 @@
 test(a, b) {
-    auto c;
-    c = 3;
-    return(a + c + 1);
+    return(a + 1 + b + b + b + b + 1 + 4 + 84 + b + b + b + b);
 }
 
 
