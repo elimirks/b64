@@ -16,6 +16,7 @@ pub enum Statement {
 pub enum Expr {
     Id(String),
     Int(i64),
+    Assignment(String, Box<Expr>),
     Operator(Op, Box<Expr>, Box<Expr>),
     // App(String, Vec<Box<Expr>>),
     // Var(String),
@@ -24,6 +25,5 @@ pub enum Expr {
 #[derive(Debug)]
 pub enum Op {
     Add,
-    Assignment,
-    //Sub,
+    Sub,
 }

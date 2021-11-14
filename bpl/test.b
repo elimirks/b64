@@ -1,5 +1,7 @@
 test(a, b) {
-    return(a + b);
+    auto c;
+    c = 3;
+    return(a + c + 1);
 }
 
 

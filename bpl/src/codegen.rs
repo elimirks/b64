@@ -1,11 +1,11 @@
 use std::collections::HashMap;
+use std::collections::LinkedList;
 
 use crate::ast::*;
 use crate::memory::*;
 
 struct FunContext {
-    variables: HashMap<String, VarLoc>,
-    // Size of the stack, excluding things above (and including) return address
+    variables: HashMap<String, Loc>,
 }
 
 /**
@@ -13,7 +13,8 @@ struct FunContext {
  * @param body The function body to search for auto declarations
  * @param offset The positive offset from rbp (how much space came before this)
  */
-fn alloc_autos(c: &mut FunContext, body: &Statement, offset: i64) {
+fn alloc_autos(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<String> {
+    let mut instructions = LinkedList::new();
     let mut stack = vec!(body);
     let mut autos_size = 0;
 
@@ -24,7 +25,7 @@ fn alloc_autos(c: &mut FunContext, body: &Statement, offset: i64) {
                 for var in vars {
                     c.variables.insert(
                         var.clone(),
-                        VarLoc::Stack(-offset - autos_size)
+                        Loc::Stack(-offset - autos_size)
                     );
                     autos_size += 1;
                 }
@@ -39,27 +40,31 @@ fn alloc_autos(c: &mut FunContext, body: &Statement, offset: i64) {
     }
 
     if autos_size > 0 {
-        println!("  subq ${}, %rsp", 8 * autos_size);
+        instructions.push_back(format!("subq ${}, %rsp", 8 * autos_size));
     }
+
+    instructions
 }
 
 // Allocates the necessary args on the stack
-fn alloc_args(c: &mut FunContext, args: &Vec<String>) {
+fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
+    let mut instructions = LinkedList::new();
     for i in 0..args.len() {
         if i < 6 {
             let register = register_for_arg_num(i);
-            println!("  pushq %{}", register);
+            instructions.push_back(format!("pushq %{}", register));
             c.variables.insert(
                 args[i].clone(),
-                VarLoc::Stack(-(i as i64) - 1)
+                Loc::Stack(-(i as i64) - 1)
             );
         } else {
             c.variables.insert(
                 args[i].clone(),
-                VarLoc::Stack((i as i64) - 4)
+                Loc::Stack((i as i64) - 4)
             );
         }
     }
+    instructions
 }
 
 fn register_for_arg_num(num: usize) -> Reg {
@@ -76,96 +81,133 @@ fn register_for_arg_num(num: usize) -> Reg {
     }
 }
 
+fn op_to_command(op: &Op) -> String {
+    match op {
+        Op::Add => "addq".to_string(),
+        Op::Sub => "subq".to_string(),
+    }
+}
+
+fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc) {
+    /*
+     * TODO: At some point this should get optimized...
+     * In many cases it needlessly relies on the stack.
+     * A better strategy would be to track which registers "rhs" needs.
+     * And only move the lhs result if it overlaps with the "rhs" registers.
+     * If all registers are used by "rhs", then in _that_ case push to the stack.
+     */
+    let (mut instructions, lhs_loc) = gen_expr(c, lhs);
+    instructions.push_back(format!("pushq {}", lhs_loc));
+
+    let (mut rhs_instructions, rhs_loc) = gen_expr(c, rhs);
+    instructions.append(&mut rhs_instructions);
+
+    let command = op_to_command(op);
+
+    let dest_loc = match rhs_loc {
+        Loc::Register(Reg::Rax) => Loc::Register(Reg::Rcx),
+        _                       => Loc::Register(Reg::Rax),
+    };
+
+    instructions.push_back(format!("popq {}", dest_loc));
+    instructions.push_back(format!("{} {}, {}", command, rhs_loc, dest_loc));
+
+    (instructions, dest_loc)
+}
+
 // Returns the location of the final expression
-fn gen_expr<'a>(c: &'a mut FunContext, expr: &'a Expr) -> &'a VarLoc {
+fn gen_expr<'a>(c: &'a FunContext, expr: &'a Expr) -> (LinkedList<String>, Loc) {
     match expr {
         Expr::Int(value) => {
-            println!("  movq ${}, %rax", value);
-            &VarLoc::Register(Reg::Rax)
+            (LinkedList::new(), Loc::Immediate(*value))
         },
         Expr::Id(name) => {
             match c.variables.get(name) {
-                Some(location) => location,
+                Some(location) => (LinkedList::new(), *location),
                 None => panic!("Variable {} not in scope", name),
             }
         },
-        Expr::Operator(op, lhs, rhs) => {
-            // This is pretty dumb for now
-            // It should use registers instead of relying on the stack 100%
-            println!("  pushq {}", gen_expr(c, lhs));
-            let rhs_loc = gen_expr(c, rhs);
+        Expr::Assignment(lhs_name, rhs) => {
+            let (mut instructions, rhs_loc) = gen_expr(c, rhs);
 
-            match op {
-                Op::Add => {
-                    println!("  addq {}, (%rsp)", rhs_loc);
-                    println!("  popq %rax");
-                    &VarLoc::Register(Reg::Rax)
+            match c.variables.get(lhs_name) {
+                Some(lhs_loc) => {
+                    instructions.push_back(format!("movq {}, {}", rhs_loc, lhs_loc));
+                    (instructions, *lhs_loc)
                 },
-                op => panic!("Operator {:?} not supported", op),
+                None => panic!("Variable {} not in scope", lhs_name),
             }
         },
-        // _ => panic!("Expr type {:?} not yet supported", expr)
+        Expr::Operator(op, lhs, rhs) => gen_op(c, op, lhs, rhs),
     }
 }
 
-fn gen_return(c: &mut FunContext, expr: &Expr) {
-    let loc = gen_expr(c, &expr);
+fn gen_return(c: &FunContext, expr: &Expr) -> LinkedList<String> {
+    let (mut instructions, loc) = gen_expr(c, &expr);
 
     // If the location is already rax, we don't need to move!
-    if loc != &VarLoc::Register(Reg::Rax) {
-        println!("  movq {}, %rax", loc);
+    if loc != Loc::Register(Reg::Rax) {
+        instructions.push_back(format!("movq {}, %rax", loc));
     }
 
-    println!("  leave");
-    println!("  retq");
+    instructions.push_back("leave".to_string());
+    instructions.push_back("retq".to_string());
+    instructions
 }
 
 // Returns true if the last statement is a return
-fn gen_fun_body(c: &mut FunContext, body: &Statement) -> bool {
+fn gen_fun_body(c: &FunContext, body: &Statement) -> LinkedList<String> {
     match body {
-        Statement::Return(expr) => {
-            gen_return(c, expr);
-            true
-        },
+        Statement::Return(expr) => gen_return(c, expr),
         Statement::Block(statements) => {
-            let mut trailing_ret = false;
+            let mut instructions = LinkedList::new();
             for statement in statements {
-                trailing_ret = gen_fun_body(c, statement)
+                instructions.append(&mut gen_fun_body(c, statement))
             }
-            trailing_ret
+            instructions
         },
-        _ => false,
+        Statement::Auto(_) => LinkedList::new(),
+        Statement::Expr(expr) => {
+            let (instructions, _) = gen_expr(c, expr);
+            instructions
+        },
     }
 }
 
-fn gen_fun(name: String, args: Vec<String>, body: Statement) {
+fn gen_fun(args: Vec<String>, body: Statement) -> LinkedList<String> {
     let mut c = FunContext {
         variables: HashMap::new(),
     };
 
-    println!("{}:", name);
+    let mut instructions = LinkedList::new();
     // Save base pointer, since it's callee-saved
-    println!("  pushq %rbp");
-    println!("  movq %rsp, %rbp");
+    instructions.push_back(format!("pushq %rbp"));
+    instructions.push_back(format!("movq %rsp, %rbp"));
+
     // Prepare initial stack memory
-    alloc_args(&mut c, &args);
-    alloc_autos(&mut c, &body, 1 + std::cmp::min(6, args.len() as i64));
+    instructions.append(&mut alloc_args(&mut c, &args));
+    instructions.append(
+        &mut alloc_autos(&mut c, &body, 1 + std::cmp::min(6, args.len() as i64))
+    );
 
-    let has_ret = gen_fun_body(&mut c, &body);
+    instructions.append(&mut gen_fun_body(&c, &body));
 
-    if !has_ret {
-        println!("  leave");
-        println!("  retq");
-    }
+    instructions.push_back("leave".to_string());
+    instructions.push_back("retq".to_string());
 
-    println!("Entry variable allocation: {:?}:", c.variables);
+    //println!("Entry variable allocation: {:?}:", c.variables);
+    instructions
 }
 
 pub fn generate(statements: Vec<RootStatement>) {
     for statement in statements {
         match statement {
             RootStatement::Function(name, args, body) => {
-                gen_fun(name, args, body);
+                let instructions = gen_fun(args, body);
+                println!("{}:", name);
+                for instruction in instructions {
+                    println!("  {}", instruction);
+                }
             },
             //other => println!("Can't compile this yet: {:?}", other),
         }

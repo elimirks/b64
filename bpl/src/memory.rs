@@ -1,7 +1,7 @@
 use std::fmt;
 
 #[allow(dead_code)]
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum Reg {
     Rax, Rbx, Rcx, Rdx,
     Rdi, Rsi, Rbp, Rsp,
@@ -11,14 +11,15 @@ pub enum Reg {
 
 // Where variables are located
 // In the future it should have Register(...) and Data(...)
-#[derive(PartialEq)]
-pub enum VarLoc {
+#[derive(Clone, Copy, PartialEq)]
+pub enum Loc {
     // Stack position relative to %rbp
     // +1 means the return address, +2 means 7th arg, +3 means 8th, ...
     // As per x86_64 Linux calling conventions, the
     // first 6 args are passed into functions by registers
     Stack(i64),
     Register(Reg),
+    Immediate(i64),
 }
 
 impl fmt::Display for Reg {
@@ -50,16 +51,17 @@ impl fmt::Debug for Reg {
     }
 }
 
-impl fmt::Display for VarLoc {
+impl fmt::Display for Loc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            VarLoc::Stack(offset) => write!(f, "{}(%rbp)", 8 * offset),
-            VarLoc::Register(reg) => write!(f, "%{}", reg),
+            Loc::Stack(offset)    => write!(f, "{}(%rbp)", 8 * offset),
+            Loc::Register(reg)    => write!(f, "%{}", reg),
+            Loc::Immediate(value) => write!(f, "${}", value),
         }
     }
 }
 
-impl fmt::Debug for VarLoc {
+impl fmt::Debug for Loc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self)
     }

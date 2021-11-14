@@ -23,6 +23,7 @@ enum Token {
     Semicolon,
     Comma,
     Plus,
+    Minus,
     Equals,
 }
 
@@ -102,6 +103,7 @@ fn get_tok(c: &mut ParseContext) -> Option<Token> {
 
         match next_char.unwrap() {
             '+' => Some(Token::Plus),
+            '-' => Some(Token::Minus),
             '=' => Some(Token::Equals),
             '(' => Some(Token::LParen),
             ')' => Some(Token::RParen),
@@ -353,37 +355,45 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
     // FIXME: This is a mess
     match next_tok.unwrap() {
         Token::Equals => {
-            // TODO: Instead of recursion, aggregate in a loop
-            // That will make it easy to implement operator precedence
-            let rhs = parse_expr(c);
-
-            if rhs.is_none() {
-                None
-            } else {
-                Some(Expr::Operator(
-                    Op::Assignment,
-                    Box::new(first_expr.unwrap()),
-                    Box::new(rhs.unwrap())
-                ))
+            match first_expr.unwrap() {
+                Expr::Id(lhs) => {
+                    let rhs = parse_expr(c);
+                    if rhs.is_none() {
+                        None
+                    } else {
+                        Some(Expr::Assignment(
+                            lhs,
+                            Box::new(rhs.unwrap())
+                        ))
+                    }
+                },
+                _ => {
+                    c.error = Some("lhs of assignment must be an ID".to_string());
+                    None
+                },
             }
         },
-        Token::Plus => {
-            let rhs = parse_expr(c);
-
-            if rhs.is_none() {
-                None
-            } else {
-                Some(Expr::Operator(
-                    Op::Add,
-                    Box::new(first_expr.unwrap()),
-                    Box::new(rhs.unwrap())
-                ))
-            }
-        },
+        Token::Plus  => chain_expr(c, first_expr.unwrap(), Op::Add),
+        Token::Minus => chain_expr(c, first_expr.unwrap(), Op::Sub),
         _ => {
+            // The next token isn't a chaining token... Rewind!
             c.offset = initial_offset;
             first_expr
         },
+    }
+}
+
+fn chain_expr(c: &mut ParseContext, lhs: Expr, op: Op) -> Option<Expr> {
+    let rhs = parse_expr(c);
+
+    if rhs.is_none() {
+        None
+    } else {
+        Some(Expr::Operator(
+            op,
+            Box::new(lhs),
+            Box::new(rhs.unwrap())
+        ))
     }
 }
 
