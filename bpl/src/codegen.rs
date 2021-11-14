@@ -11,7 +11,7 @@ struct FunContext {
 /**
  * Allocates stack memory for auto variables
  * @param body The function body to search for auto declarations
- * @param offset The 
+ * @param offset The positive offset from rbp (how much space came before this)
  */
 fn alloc_autos(c: &mut FunContext, body: &Statement, offset: i64) {
     let mut stack = vec!(body);
@@ -77,18 +77,64 @@ fn register_for_arg_num(num: usize) -> Reg {
 }
 
 // Returns the location of the final expression
-fn gen_expr(c: &mut FunContext, expr: Expr) -> VarLoc {
-    VarLoc::Register(Reg::Rax)
+fn gen_expr<'a>(c: &'a mut FunContext, expr: &'a Expr) -> &'a VarLoc {
+    match expr {
+        Expr::Int(value) => {
+            println!("  movq ${}, %rax", value);
+            &VarLoc::Register(Reg::Rax)
+        },
+        Expr::Id(name) => {
+            match c.variables.get(name) {
+                Some(location) => location,
+                None => panic!("Variable {} not in scope", name),
+            }
+        },
+        Expr::Operator(op, lhs, rhs) => {
+            // This is pretty dumb for now
+            // It should use registers instead of relying on the stack 100%
+            println!("  pushq {}", gen_expr(c, lhs));
+            let rhs_loc = gen_expr(c, rhs);
+
+            match op {
+                Op::Add => {
+                    println!("  addq {}, (%rsp)", rhs_loc);
+                    println!("  popq %rax");
+                    &VarLoc::Register(Reg::Rax)
+                },
+                op => panic!("Operator {:?} not supported", op),
+            }
+        },
+        // _ => panic!("Expr type {:?} not yet supported", expr)
+    }
 }
 
-fn gen_return(c: &mut FunContext, expr: Expr) {
-    // TODO: First generate the result of the expr ...
+fn gen_return(c: &mut FunContext, expr: &Expr) {
+    let loc = gen_expr(c, &expr);
+
+    // If the location is already rax, we don't need to move!
+    if loc != &VarLoc::Register(Reg::Rax) {
+        println!("  movq {}, %rax", loc);
+    }
+
+    println!("  leave");
+    println!("  retq");
 }
 
-fn gen_fun_body(c: &mut FunContext, body: Statement) {
+// Returns true if the last statement is a return
+fn gen_fun_body(c: &mut FunContext, body: &Statement) -> bool {
     match body {
-        Statement::Return(expr) => gen_return(c, expr),
-        _ => {},
+        Statement::Return(expr) => {
+            gen_return(c, expr);
+            true
+        },
+        Statement::Block(statements) => {
+            let mut trailing_ret = false;
+            for statement in statements {
+                trailing_ret = gen_fun_body(c, statement)
+            }
+            trailing_ret
+        },
+        _ => false,
     }
 }
 
@@ -105,10 +151,12 @@ fn gen_fun(name: String, args: Vec<String>, body: Statement) {
     alloc_args(&mut c, &args);
     alloc_autos(&mut c, &body, 1 + std::cmp::min(6, args.len() as i64));
 
-    // TODO: <interesting stuff goes here>
+    let has_ret = gen_fun_body(&mut c, &body);
 
-    println!("  leave");
-    println!("  retq");
+    if !has_ret {
+        println!("  leave");
+        println!("  retq");
+    }
 
     println!("Entry variable allocation: {:?}:", c.variables);
 }

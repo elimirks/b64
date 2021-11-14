@@ -1,6 +1,7 @@
 use std::fmt;
 
 #[allow(dead_code)]
+#[derive(PartialEq)]
 pub enum Reg {
     Rax, Rbx, Rcx, Rdx,
     Rdi, Rsi, Rbp, Rsp,
@@ -10,6 +11,7 @@ pub enum Reg {
 
 // Where variables are located
 // In the future it should have Register(...) and Data(...)
+#[derive(PartialEq)]
 pub enum VarLoc {
     // Stack position relative to %rbp
     // +1 means the return address, +2 means 7th arg, +3 means 8th, ...
