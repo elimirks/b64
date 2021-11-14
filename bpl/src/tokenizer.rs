@@ -88,64 +88,39 @@ pub fn peek_tok(c: &mut ParseContext) -> Option<Token> {
     tok
 }
 
+// Generates a symbol tokenizer match statemnt for ambiguous multi-char tokens
+macro_rules! multi_tok {
+    ($context:expr, $default:expr, $($extra:expr, $token:expr),*) => {
+        match $context.peek_char() {
+            $(
+                Some($extra) => {
+                    $context.offset += 1;
+                    Some($token)
+                },
+            )*
+            _ => Some($default),
+        }
+    };
+}
+
 // Assumes c.content[c.offset] is in bounds
 fn get_tok_symbol(c: &mut ParseContext) -> Option<Token> {
     c.offset += 1;
-    // TODO: Macro to make this less hideous
     match c.content[c.offset - 1] as char {
-        '+' => {
-            match c.peek_char() {
-                Some('+') => {
-                    c.offset += 1;
-                    Some(Token::PlusPlus)
-                },
-                _ => Some(Token::Plus),
-            }
-        },
-        '-' => {
-            match c.peek_char() {
-                Some('-') => {
-                    c.offset += 1;
-                    Some(Token::MinusMinus)
-                },
-                _ => Some(Token::Minus),
-            }
-        },
-        '=' => {
-            match c.peek_char() {
-                Some('=') => {
-                    c.offset += 1;
-                    Some(Token::EqEq)
-                },
-                _ => Some(Token::Eq),
-            }
-        },
-        '>' => {
-            match c.peek_char() {
-                Some('>') => {
-                    c.offset += 1;
-                    Some(Token::ShiftRight)
-                },
-                Some('=') => {
-                    c.offset += 1;
-                    Some(Token::Ge)
-                },
-                _ => Some(Token::Gt),
-            }
-        },
-        '<' => {
-            match c.peek_char() {
-                Some('<') => {
-                    c.offset += 1;
-                    Some(Token::ShiftLeft)
-                },
-                Some('=') => {
-                    c.offset += 1;
-                    Some(Token::Le)
-                },
-                _ => Some(Token::Lt),
-            }
-        },
+        '+' => multi_tok!(c, Token::Plus,
+                          '+', Token::PlusPlus),
+        '-' => multi_tok!(c, Token::Minus,
+                          '-', Token::MinusMinus),
+        '=' => multi_tok!(c, Token::Eq,
+                          '-', Token::EqEq),
+        '>' => multi_tok!(c, Token::Gt,
+                          '>', Token::ShiftRight,
+                          '=', Token::Ge),
+        '<' => multi_tok!(c, Token::Lt,
+                          '<', Token::ShiftLeft,
+                          '=', Token::Le),
+        '!' => multi_tok!(c, Token::Bang,
+                          '=', Token::Ne),
         '(' => Some(Token::LParen),
         ')' => Some(Token::RParen),
         '{' => Some(Token::LBrace),
@@ -156,15 +131,6 @@ fn get_tok_symbol(c: &mut ParseContext) -> Option<Token> {
         ',' => Some(Token::Comma),
         '*' => Some(Token::Asterisk),
         '&' => Some(Token::Ampersand),
-        '!' => {
-            match c.peek_char() {
-                Some('=') => {
-                    c.offset += 1;
-                    Some(Token::Ne)
-                },
-                _ => Some(Token::Bang)
-            }
-        },
         '~' => Some(Token::Tilde),
         '/' => Some(Token::Slash),
         '%' => Some(Token::Percent),
