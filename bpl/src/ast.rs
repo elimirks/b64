@@ -8,12 +8,14 @@ pub enum Statement {
     // Statement representing executing a single expr
     Expr(Expr),
     Return(Expr),
+    Auto(Vec<String>),
     Block(Vec<Statement>),
 }
 
 #[derive(Debug)]
 pub enum Expr {
     Id(String),
+    Int(i64),
     Operator(Op, Box<Expr>, Box<Expr>),
     // App(String, Vec<Box<Expr>>),
     // Var(String),
@@ -22,5 +24,6 @@ pub enum Expr {
 #[derive(Debug)]
 pub enum Op {
     Add,
+    Assignment,
     //Sub,
 }
