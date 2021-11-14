@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::collections::LinkedList;
 use std::collections::HashSet;
+use std::io::BufWriter;
+use std::io::Write;
 
 use crate::ast::*;
 use crate::memory::*;
@@ -172,7 +174,7 @@ fn gen_expr<'a>(c: &'a FunContext, expr: &'a Expr) -> (LinkedList<String>, Loc, 
     }
 }
 
-fn gen_return(c: &FunContext, expr: &Expr) -> LinkedList<String> {
+fn gen_return_expr(c: &FunContext, expr: &Expr) -> LinkedList<String> {
     let (mut instructions, loc, _) = gen_expr(c, &expr);
 
     // If the location is already rax, we don't need to move!
@@ -185,17 +187,20 @@ fn gen_return(c: &FunContext, expr: &Expr) -> LinkedList<String> {
     instructions
 }
 
+fn gen_return() -> LinkedList<String> {
+    let mut instructions = LinkedList::new();
+    instructions.push_back("movq $0,%rax".to_string());
+    instructions.push_back("leave".to_string());
+    instructions.push_back("ret".to_string());
+    instructions
+}
+
 // Returns true if the last statement is a return
 fn gen_fun_body(c: &FunContext, body: &Statement) -> LinkedList<String> {
     match body {
         Statement::Null => LinkedList::new(),
-        Statement::Return => {
-            let mut instructions = LinkedList::new();
-            instructions.push_back("leave".to_string());
-            instructions.push_back("ret".to_string());
-            instructions
-        },
-        Statement::ReturnExpr(expr) => gen_return(c, expr),
+        Statement::Return => gen_return(),
+        Statement::ReturnExpr(expr) => gen_return_expr(c, expr),
         Statement::Block(statements) => {
             let mut instructions = LinkedList::new();
             for statement in statements {
@@ -235,24 +240,36 @@ fn gen_fun(args: Vec<String>, body: Statement) -> LinkedList<String> {
     };
 
     if !trailing_ret {
-        instructions.push_back("leave".to_string());
-        instructions.push_back("ret".to_string());
+        instructions.append(&mut gen_return());
     }
 
     instructions
 }
 
-pub fn generate(statements: Vec<RootStatement>) {
+pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
+    let mut w = BufWriter::new(writer);
+
+    // Call main, use the return value as the exit status
+    writeln!(w, ".text\n\
+                 .global _start\n\
+                 _start:\n\
+                     call main\n\
+                     movq %rax,%rbx\n\
+                     movq $1,%rax\n\
+                     int  $0x80"
+    ).expect("Failed writing to output");
+
     for statement in statements {
         match statement {
             RootStatement::Function(name, args, body) => {
                 let instructions = gen_fun(args, body);
-                println!("{}:", name);
+                writeln!(w, "{}:", name)
+                    .expect("Failed writing to output");
                 for instruction in instructions {
-                    println!("  {}", instruction);
+                    writeln!(w, "    {}", instruction)
+                        .expect("Failed writing to output");
                 }
             },
-            //other => println!("Can't compile this yet: {:?}", other),
         }
     }
 }
