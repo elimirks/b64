@@ -43,6 +43,14 @@ impl ParseContext<'_> {
         }
     }
 
+    fn peek_chars(&self, len: usize) -> &[u8] {
+        if self.at_eof() {
+            return &[];
+        }
+        let end = std::cmp::min(self.offset + len, self.content.len());
+        &self.content[self.offset..end]
+    }
+
     fn at_eof(&self) -> bool {
         self.offset >= self.content.len()
     }
@@ -143,16 +151,49 @@ fn alphanumeric_slice(slice: &[u8], offset: usize) -> &[u8] {
     &slice[offset..offset + len]
 }
 
-// Parse any amount of whitespace
+// Parse any amount of whitespace, including comments
 fn parse_ws(c: &mut ParseContext) {
+    let mut parsed = false;
     while !c.at_eof() {
         match c.peek_char() {
-            Some(' ') => {},
-            Some('\n') => {},
-            _ => return,
+            Some(' ')  => c.offset += 1,
+            Some('\n') => c.offset += 1,
+            Some('/')  => {
+                if !parse_comment(c) {
+                    break;
+                }
+            },
+            _ => break,
         }
-        c.offset += 1;
     }
+}
+
+/**
+ * When calling this, it assumes self.content[self.offset] = '/'
+ * @return true if it successfully parsed a comment
+ */
+fn parse_comment(c: &mut ParseContext) -> bool {
+    if c.offset + 1 >= c.content.len() {
+        return false;
+    }
+    if c.content[c.offset + 1] as char != '*' {
+        return false;
+    }
+    c.offset += 2;
+
+    let mut one = '\0';
+    let mut two = '\0';
+
+    while !c.at_eof() {
+        one = two;
+        two = c.content[c.offset] as char;
+        c.offset += 1;
+
+        if one == '*' && two == '/' {
+            break;
+        }
+    }
+    true
 }
 
 // Returns false if it failed to parse the given token
@@ -466,10 +507,19 @@ pub fn parse(content: String) -> Vec<RootStatement> {
         error: None,
     };
 
-    let root = parse_root_statement(&mut c);
-    if c.has_error() {
-        print_error(&mut c);
-        std::process::exit(1);
+    let mut roots = vec!();
+    loop {
+        match parse_root_statement(&mut c) {
+            Some(statement) => roots.push(statement),
+            None => {
+                if c.has_error() {
+                    print_error(&mut c);
+                    std::process::exit(1);
+                } else if c.at_eof() {
+                    break;
+                }
+            },
+        }
     }
-    vec!(root.unwrap())
+    roots
 }
