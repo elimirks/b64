@@ -6,35 +6,37 @@ use crate::ast::*;
 // In the future it should have Register(...) and Data(...)
 #[derive(Debug)]
 enum VarLoc {
-    // Stack position relative to the return address
-    // Negative values mean before the return address
+    // Stack position relative to %rbp
+    // +1 means the return address, +2 means 7th arg, +3 means 8th, ...
+    // As per x86_64 Linux calling conventions, the
+    // first 6 args are passed into functions by registers
     Stack(i64),
 }
 
 struct FunContext {
     variables: HashMap<String, VarLoc>,
     // Size of the stack, excluding things above (and including) return address
-    stack_size: i64,
 }
 
 /**
- * Finds the amount of extra stack memory we need to allocate
- * @return A map of identifier to memory size (always 1 except for vectors)
+ * Allocates stack memory for auto variables
+ * @param body The function body to search for auto declarations
+ * @param offset The 
  */
-fn pre_alloc_autos(c: &mut FunContext, body: &Statement) {
+fn alloc_autos(c: &mut FunContext, body: &Statement, offset: i64) {
     let mut stack = vec!(body);
+    let mut autos_size = 0;
 
     // DFS to find them all
     while !stack.is_empty() {
         match stack.pop().unwrap() {
             Statement::Auto(vars) => {
                 for var in vars {
-                    c.stack_size += 1;
-                    // TODO: Die upon reassignment! Ban shadowing for now
                     c.variables.insert(
                         var.clone(),
-                        VarLoc::Stack(c.stack_size)
+                        VarLoc::Stack(-offset - autos_size)
                     );
+                    autos_size += 1;
                 }
             },
             Statement::Block(statements) => {
@@ -45,20 +47,26 @@ fn pre_alloc_autos(c: &mut FunContext, body: &Statement) {
             _ => {},
         }
     }
+
+    if autos_size > 0 {
+        println!("  subq ${}, %rsp", 8 * autos_size);
+    }
 }
 
-fn pre_alloc_args(c: &mut FunContext, args: &Vec<String>) {
+// Allocates the necessary args on the stack
+fn alloc_args(c: &mut FunContext, args: &Vec<String>) {
     for i in 0..args.len() {
         if i < 6 {
-            c.stack_size += 1;
+            let register = register_for_arg_num(i);
+            println!("  pushq %{}", register);
             c.variables.insert(
                 args[i].clone(),
-                VarLoc::Stack(c.stack_size)
+                VarLoc::Stack(-(i as i64) - 1)
             );
         } else {
             c.variables.insert(
                 args[i].clone(),
-                VarLoc::Stack(5 - i as i64)
+                VarLoc::Stack((i as i64) - 4)
             );
         }
     }
@@ -81,34 +89,22 @@ fn register_for_arg_num(num: usize) -> String {
 fn gen_function(name: String, args: Vec<String>, body: Statement) {
     let mut c = FunContext {
         variables: HashMap::new(),
-        stack_size: 0,
     };
 
-    pre_alloc_args(&mut c, &args);
-    pre_alloc_autos(&mut c, &body);
+    println!("{}:", name);
+    // Save base pointer, since it's callee-saved
+    println!("  pushq %rbp");
+    println!("  movq %rsp, %rbp");
+    // Prepare initial stack memory
+    alloc_args(&mut c, &args);
+    alloc_autos(&mut c, &body, 1 + std::cmp::min(6, args.len() as i64));
+
+    // TODO: <interesting stuff goes here>
+
+    println!("  leave");
+    println!("  retq");
 
     println!("Entry variable allocation: {:?}:", c.variables);
-    println!("Entry stack size: {}", c.stack_size);
-    
-    println!("{}:", name);
-
-    // Allocate initial stack memory
-    if c.stack_size > 0 {
-        println!("  subq ${}, %rsp", c.stack_size * 8);
-    }
-
-    // Move first 6 args onto the stack
-    for i in 0..std::cmp::min(6, args.len()) {
-        let register = register_for_arg_num(i);
-        let VarLoc::Stack(index) = c.variables.get(&args[i]).unwrap();
-        println!("  movq %{} {}(%rsp)", register, 8 * (c.stack_size - index));
-    }
-
-    if c.stack_size > 0 {
-        println!("  addq ${}, %rsp", 8 * c.stack_size);
-    }
-
-    println!("  retq");
 }
 
 pub fn generate(statements: Vec<RootStatement>) {
