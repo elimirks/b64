@@ -7,7 +7,9 @@ pub enum RootStatement {
 pub enum Statement {
     // Statement representing executing a single expr
     Expr(Expr),
-    Return(Expr),
+    ReturnExpr(Expr),
+    Return,
+    Null, // "no op" essentially
     Auto(Vec<String>),
     Block(Vec<Statement>),
 }

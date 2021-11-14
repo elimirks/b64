@@ -2,6 +2,7 @@ mod ast;
 mod codegen;
 mod memory;
 mod parser;
+mod tokenizer;
 
 use std::env;
 use std::fs;

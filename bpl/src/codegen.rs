@@ -188,7 +188,14 @@ fn gen_return(c: &FunContext, expr: &Expr) -> LinkedList<String> {
 // Returns true if the last statement is a return
 fn gen_fun_body(c: &FunContext, body: &Statement) -> LinkedList<String> {
     match body {
-        Statement::Return(expr) => gen_return(c, expr),
+        Statement::Null => LinkedList::new(),
+        Statement::Return => {
+            let mut instructions = LinkedList::new();
+            instructions.push_back("leave".to_string());
+            instructions.push_back("ret".to_string());
+            instructions
+        },
+        Statement::ReturnExpr(expr) => gen_return(c, expr),
         Statement::Block(statements) => {
             let mut instructions = LinkedList::new();
             for statement in statements {

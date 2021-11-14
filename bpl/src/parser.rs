@@ -1,41 +1,16 @@
 use std::str;
-
 use crate::ast::*;
+use crate::tokenizer::*;
 
-#[derive(Debug, PartialEq)]
-enum Token {
-    Id(String),
-    Int(i64),
-    Return,
-    Auto,
-    Extern,
-    Eof,
-    While,
-    If,
-    Else,
-    Goto,
-    Switch,
-    Break,
-    LParen,
-    RParen,
-    LBrace,
-    RBrace,
-    Semicolon,
-    Comma,
-    Plus,
-    Minus,
-    Equals,
-}
-
-struct ParseContext<'a> {
-    content: &'a [u8],
+pub struct ParseContext<'a> {
+    pub content: &'a [u8],
     // Offset should only increment once we've parsed a "good" value
-    offset: usize,
-    error: Option<String>,
+    pub offset: usize,
+    pub error: Option<String>,
 }
 
 impl ParseContext<'_> {
-    fn peek_char(&self) -> Option<char> {
+    pub fn peek_char(&self) -> Option<char> {
         if self.offset < self.content.len() {
             Some(self.content[self.offset] as char)
         } else {
@@ -43,172 +18,12 @@ impl ParseContext<'_> {
         }
     }
 
-    fn peek_chars(&self, len: usize) -> &[u8] {
-        if self.at_eof() {
-            return &[];
-        }
-        let end = std::cmp::min(self.offset + len, self.content.len());
-        &self.content[self.offset..end]
-    }
-
-    fn at_eof(&self) -> bool {
+    pub fn at_eof(&self) -> bool {
         self.offset >= self.content.len()
     }
 
-    fn has_error(&self) -> bool {
+    pub fn has_error(&self) -> bool {
         !self.error.is_none()
-    }
-}
-
-// Returns None for invalid tokens
-// Returns Token::Eof for Eof (considered a valid token)
-fn get_tok(c: &mut ParseContext) -> Option<Token> {
-    // Seek past useless whitespace
-    parse_ws(c);
-
-    // First try tokenizing "word like" things
-    // Includes integers
-    let current_word = alphanumeric_slice(c.content, c.offset);
-    if current_word.len() > 0 {
-        c.offset += current_word.len();
-
-        let str_word = str::from_utf8(current_word)
-            .expect("Invalid UTF8 found in file");
-
-        match str_word {
-            "return" => return Some(Token::Return),
-            "auto"   => return Some(Token::Auto),
-            "extern" => return Some(Token::Extern),
-            "eof"    => return Some(Token::Eof),
-            "while"  => return Some(Token::While),
-            "if"     => return Some(Token::If),
-            "else"   => return Some(Token::Else),
-            "goto"   => return Some(Token::Goto),
-            "switch" => return Some(Token::Switch),
-            "break"  => return Some(Token::Break),
-            _ => {},
-        }
-
-        if (current_word[0] as char).is_alphabetic() {
-            Some(Token::Id(str_word.to_string()))
-        } else {
-            // Else it must be numeric
-            match str_word.parse::<i64>() {
-                Ok(num) => Some(Token::Int(num)),
-                _       => {
-                    c.offset -= current_word.len(); // Rewind
-                    c.error = Some(format!("Invalid int literal: {}", str_word));
-                    None
-                },
-            }
-        }
-    } else {
-        let next_char = c.peek_char();
-        if next_char.is_none() {
-            return Some(Token::Eof);
-        }
-        c.offset += 1;
-
-        match next_char.unwrap() {
-            '+' => Some(Token::Plus),
-            '-' => Some(Token::Minus),
-            '=' => Some(Token::Equals),
-            '(' => Some(Token::LParen),
-            ')' => Some(Token::RParen),
-            '{' => Some(Token::LBrace),
-            '}' => Some(Token::RBrace),
-            ';' => Some(Token::Semicolon),
-            ',' => Some(Token::Comma),
-            other => {
-                c.offset -= 1;
-                c.error = Some(format!("Invalid token: {}", other));
-                None
-            }
-        }
-    }
-}
-
-fn peek_tok(c: &mut ParseContext) -> Option<Token> {
-    parse_ws(c); // It's ok to just jump back to right after the whitespace
-    let initial = c.offset;
-    let tok = get_tok(c);
-    c.offset = initial;
-    tok
-}
-
-// Extract an alphanumeric slice at the given offset
-// Returns an empty slice if the offset is out of bounds
-// Or if there are no alphanumeric characters at that position
-fn alphanumeric_slice(slice: &[u8], offset: usize) -> &[u8] {
-    let mut len = 0;
-    while offset + len < slice.len() {
-        if (slice[offset + len] as char).is_alphanumeric() {
-            len += 1;
-        } else {
-            break;
-        }
-    }
-    &slice[offset..offset + len]
-}
-
-// Parse any amount of whitespace, including comments
-fn parse_ws(c: &mut ParseContext) {
-    let mut parsed = false;
-    while !c.at_eof() {
-        match c.peek_char() {
-            Some(' ')  => c.offset += 1,
-            Some('\n') => c.offset += 1,
-            Some('/')  => {
-                if !parse_comment(c) {
-                    break;
-                }
-            },
-            _ => break,
-        }
-    }
-}
-
-/**
- * When calling this, it assumes self.content[self.offset] = '/'
- * @return true if it successfully parsed a comment
- */
-fn parse_comment(c: &mut ParseContext) -> bool {
-    if c.offset + 1 >= c.content.len() {
-        return false;
-    }
-    if c.content[c.offset + 1] as char != '*' {
-        return false;
-    }
-    c.offset += 2;
-
-    let mut one = '\0';
-    let mut two = '\0';
-
-    while !c.at_eof() {
-        one = two;
-        two = c.content[c.offset] as char;
-        c.offset += 1;
-
-        if one == '*' && two == '/' {
-            break;
-        }
-    }
-    true
-}
-
-// Returns false if it failed to parse the given token
-fn parse_tok(c: &mut ParseContext, expected: Token) -> bool {
-    match get_tok(c) {
-        Some(recieved) => {
-            if expected == recieved {
-                true
-            } else {
-                c.error = Some(format!("Expected {:?}, but {:?} was found",
-                                       expected, recieved));
-                false
-            }
-        },
-        None => false,
     }
 }
 
@@ -217,6 +32,11 @@ fn parse_root_statement(c: &mut ParseContext) -> Option<RootStatement> {
         // Root statements always begin with an id
         Some(Token::Id(id)) => {
             parse_fun(c, id)
+        },
+        Some(Token::Eof) => None,
+        Some(other) => {
+            c.error = Some(format!("Expected id. {:?} found", other));
+            None
         },
         _ => None,
     }
@@ -279,9 +99,10 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
     }
 
     match tok.unwrap() {
-        Token::Return => parse_statement_return(c),
-        Token::LBrace => parse_statement_block(c),
-        Token::Auto   => parse_statement_auto(c),
+        Token::Return    => parse_statement_return(c),
+        Token::LBrace    => parse_statement_block(c),
+        Token::Auto      => parse_statement_auto(c),
+        Token::Semicolon => Some(Statement::Null),
         _ => {
             c.offset = initial_offset;
             parse_statement_expr(c)
@@ -333,8 +154,11 @@ fn parse_statement_block(c: &mut ParseContext) -> Option<Statement> {
 
     loop {
         match peek_tok(c) {
-            None                => return None,
-            Some(Token::RBrace) => break,
+            None => return None,
+            Some(Token::RBrace) => {
+                c.offset += 1;
+                break;
+            },
             _ => {
                 let statement = parse_statement(c);
                 if statement.is_none() {
@@ -350,8 +174,13 @@ fn parse_statement_block(c: &mut ParseContext) -> Option<Statement> {
 
 // Expects the `return` keyword to have been parsed already
 fn parse_statement_return(c: &mut ParseContext) -> Option<Statement> {
-    if !parse_tok(c, Token::LParen) {
-        return None;
+    match get_tok(c) {
+        Some(Token::LParen) => {},
+        Some(Token::Semicolon) => return Some(Statement::Return),
+        _ => {
+            c.error = Some(format!("Expected ( or ; after return statment"));
+            return None;
+        },
     }
 
     let expr = parse_expr(c);
@@ -363,7 +192,7 @@ fn parse_statement_return(c: &mut ParseContext) -> Option<Statement> {
         return None;
     }
 
-    Some(Statement::Return(expr.unwrap()))
+    Some(Statement::ReturnExpr(expr.unwrap()))
 }
 
 fn parse_statement_expr(c: &mut ParseContext) -> Option<Statement> {
@@ -393,9 +222,8 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
         return None;
     }
 
-    // FIXME: This is a mess
     match next_tok.unwrap() {
-        Token::Equals => {
+        Token::Eq => {
             match first_expr.unwrap() {
                 Expr::Id(lhs) => {
                     let rhs = parse_expr(c);
@@ -448,7 +276,7 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
         Token::Id(id)     => Some(Expr::Id(id)),
         Token::Int(value) => Some(Expr::Int(value)),
         other => {
-            c.error = Some(format!("Expected ID. {:?} found", other));
+            c.error = Some(format!("Expected expression. {:?} found", other));
             None
         }
     }
