@@ -11,5 +11,5 @@ test(a) {
 add(a, b) return(a + b);
 
 main() {
-    return(3);
+    return(add(1, 3));
 }

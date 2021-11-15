@@ -50,7 +50,7 @@ fn parse_fun(c: &mut ParseContext, name: String) -> Option<RootStatement> {
 
     let mut args = Vec::<String>::new();
     // To alternate between comma & arg parsing
-    let mut should_parse_arg = true;
+    let mut should_parse_param = true;
 
     // Parse args and closing paren
     loop {
@@ -62,19 +62,19 @@ fn parse_fun(c: &mut ParseContext, name: String) -> Option<RootStatement> {
         match tok.unwrap() {
             Token::RParen => break,
             Token::Id(id) => {
-                if !should_parse_arg {
+                if !should_parse_param {
                     c.error = Some("Comma expected, id found".to_string());
                     return None;
                 }
                 args.push(id);
-                should_parse_arg = false;
+                should_parse_param = false;
             },
             Token::Comma => {
-                if should_parse_arg {
+                if should_parse_param {
                     c.error = Some("id expected, comma found".to_string());
                     return None;
                 }
-                should_parse_arg = true;
+                should_parse_param = true;
             },
             other => {
                 c.error = Some(format!("Unexpected token: {:?}", other));
@@ -113,7 +113,7 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
 // Expects opening `auto` to have been parsed
 fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
     let mut ids = Vec::<String>::new();
-    let mut should_parse_arg = true;
+    let mut should_parse_param = true;
 
     loop {
         let tok = get_tok(c);
@@ -124,19 +124,19 @@ fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
         match tok.unwrap() {
             Token::Semicolon => break,
             Token::Id(id) => {
-                if !should_parse_arg {
+                if !should_parse_param {
                     c.error = Some("Comma expected, id found".to_string());
                     return None;
                 }
                 ids.push(id);
-                should_parse_arg = false;
+                should_parse_param = false;
             },
             Token::Comma => {
-                if should_parse_arg {
+                if should_parse_param {
                     c.error = Some("id expected, comma found".to_string());
                     return None;
                 }
-                should_parse_arg = true;
+                should_parse_param = true;
             },
             other => {
                 c.error = Some(format!("Unexpected token: {:?}", other));
@@ -273,13 +273,62 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
     }
 
     match tok.unwrap() {
-        Token::Id(id)     => Some(Expr::Id(id)),
+        Token::Id(id) => {
+            match peek_tok(c) {
+                Some(Token::LParen) => parse_expr_call(c, id),
+                _                   => Some(Expr::Id(id))
+            }
+        },
         Token::Int(value) => Some(Expr::Int(value)),
         other => {
             c.error = Some(format!("Expected expression. {:?} found", other));
             None
         }
     }
+}
+
+// Assumes the rparen has already been parsed
+fn parse_expr_call(c: &mut ParseContext, name: String) -> Option<Expr> {
+    // Skip the rparen, since we safely assume it has been parsed
+    get_tok(c);
+
+    let mut params = Vec::<Expr>::new();
+    // To alternate between comma & arg parsing
+    let mut should_parse_param = true;
+
+    // Parse args and closing paren
+    loop {
+        let initial_offset = c.offset;
+        let tok = get_tok(c);
+        if tok.is_none() {
+            return None;
+        }
+
+        match tok.unwrap() {
+            Token::RParen => break,
+            Token::Comma => {
+                if should_parse_param {
+                    c.error = Some("Expr expected, comma found".to_string());
+                    return None;
+                }
+                should_parse_param = true;
+            },
+            _ => {
+                c.offset = initial_offset;
+                if !should_parse_param {
+                    c.error = Some("Comma expected".to_string());
+                    return None;
+                }
+                match parse_expr(c) {
+                    Some(expr) => params.push(expr),
+                    None       => return None,
+                }
+                should_parse_param = false;
+            },
+        }
+    }
+
+    Some(Expr::Call(name, params))
 }
 
 /**

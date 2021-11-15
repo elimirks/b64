@@ -145,6 +145,43 @@ fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String
     (lhs_ins, dest_loc, used_registers)
 }
 
+fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    let mut instructions = LinkedList::new();
+
+    // Evaluate backwards until the 7th var.
+    // Since the 7th+ params have to be on the stack anyways
+    for i in (6..params.len()).rev() {
+        let param = &params[i];
+        let (mut param_instructions, param_loc, _) = gen_expr(c, param);
+        instructions.append(&mut param_instructions);
+        instructions.push_back(format!("pushq {}", param_loc));
+    }
+
+    // TODO: Don't push & pop from the stack unless it's necessary
+    for i in (0..std::cmp::min(6, params.len())).rev() {
+        let param = &params[i];
+        let (mut param_instructions, param_loc, _) = gen_expr(c, param);
+        instructions.append(&mut param_instructions);
+        instructions.push_back(format!("pushq {}", param_loc));
+    }
+
+    for i in 0..std::cmp::min(6, params.len()) {
+        let reg = register_for_arg_num(i);
+        instructions.push_back(format!("popq %{}", reg));
+    }
+
+    instructions.push_back(format!("call {}", name));
+
+    if params.len() > 6 {
+        let stack_arg_count = params.len() - 6;
+        instructions.push_back(format!("addq ${}, %rsp", 8 * stack_arg_count));
+    }
+
+    // Assume we used all the registers, since we're calling an unknown function
+    let used_vars: Vec<Reg> = USABLE_CALLER_SAVE_REG.to_vec();
+    (instructions, Loc::Register(Reg::Rax), used_vars)
+}
+
 /**
  * @return (instructions, location, used_registers)
  */
@@ -171,6 +208,7 @@ fn gen_expr<'a>(c: &'a FunContext, expr: &'a Expr) -> (LinkedList<String>, Loc, 
             }
         },
         Expr::Operator(op, lhs, rhs) => gen_op(c, op, lhs, rhs),
+        Expr::Call(name, params)     => gen_call(c, name, params),
     }
 }
 
@@ -253,10 +291,10 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
     writeln!(w, ".text\n\
                  .global _start\n\
                  _start:\n\
-                     call main\n\
-                     movq %rax,%rbx\n\
-                     movq $1,%rax\n\
-                     int  $0x80"
+                 call main\n\
+                 movq %rax,%rbx\n\
+                 movq $1,%rax\n\
+                 int $0x80"
     ).expect("Failed writing to output");
 
     for statement in statements {
