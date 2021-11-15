@@ -117,7 +117,13 @@ fn gen_op_command(op: &Op, src: Loc, dest: Loc) -> (LinkedList<String>, Loc, Opt
     }
 }
 
-fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
+/**
+ * Plans evaluation strategy for an LHS and RHS expression.
+ * It will try to store the LHS value in a register if possible.
+ * Otherwise it stores to the stack.
+ * @return (instructions, lhs_loc, rhs_loc, used_registers)
+ */
+fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Loc, Vec<Reg>) {
     // Generate instructions for RHS first so we know which registers are safe
     let (mut rhs_ins, rhs_loc, mut used_registers) = gen_expr(c, rhs);
     let mut avail_registers: HashSet<&Reg> =
@@ -126,17 +132,20 @@ fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String
         avail_registers.remove(&reg.clone());
     }
 
-    let (mut lhs_ins, lhs_loc, _) = gen_expr(c, lhs);
+    // TODO: If lhs_loc is not even in a register, don't bother moving it
+    let (mut lhs_ins, lhs_loc, mut lhs_registers) = gen_expr(c, lhs);
+    used_registers.append(&mut lhs_registers);
 
-    let dest_loc = match avail_registers.iter().next() {
+    let new_lhs_loc = match avail_registers.iter().next() {
         // If there are safe registers available, store the lhs there
         Some(dest_reg) => {
+            // TODO: If the lhs_loc is already in a safe register, don't move it
             used_registers.push(**dest_reg);
             lhs_ins.push_back(format!("movq {},%{}", lhs_loc, dest_reg));
             lhs_ins.append(&mut rhs_ins);
             Loc::Register(**dest_reg)
         },
-        // Nowhere is safe! Store on the stack
+        // Nowhere is safe! Store LHS on the stack
         None => {
             let lhs_in_reg = match lhs_loc {
                 Loc::Register(_) => true,
@@ -151,21 +160,28 @@ fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String
 
             // Don't need to update used_registers because...
             // we already know everything is used!
-            let dest_loc = match rhs_loc {
+            let new_lhs_loc = match rhs_loc {
                 Loc::Register(Reg::Rax) => Loc::Register(Reg::Rcx),
                 _                       => Loc::Register(Reg::Rax),
             };
 
             if lhs_in_reg {
-                lhs_ins.push_back(format!("popq {}", dest_loc));
+                lhs_ins.push_back(format!("popq {}", new_lhs_loc));
             } else {
-                lhs_ins.push_back(format!("movq {},{}", lhs_loc, dest_loc));
+                lhs_ins.push_back(format!("movq {},{}", lhs_loc, new_lhs_loc));
             }
-            dest_loc
+            new_lhs_loc
         },
     };
 
-    // Actually run the command!
+    (lhs_ins, new_lhs_loc, rhs_loc, used_registers)
+}
+
+fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    let (mut instructions, dest_loc, rhs_loc, mut used_registers) =
+        gen_pre_op(c, lhs, rhs);
+
+    // Run the command!
     let (mut op_ins, op_loc, op_reg) =
         gen_op_command(op, rhs_loc, dest_loc);
 
@@ -173,9 +189,9 @@ fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String
         used_registers.push(reg);
     }
 
-    lhs_ins.append(&mut op_ins);
+    instructions.append(&mut op_ins);
 
-    (lhs_ins, op_loc, used_registers)
+    (instructions, op_loc, used_registers)
 }
 
 fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<String>, Loc, Vec<Reg>) {
@@ -278,26 +294,54 @@ fn gen_return() -> LinkedList<String> {
     instructions
 }
 
+fn gen_cond_comparison(
+    c: &mut FunContext,
+    cond: &Expr,
+    end_label: &String
+) -> LinkedList<String> {
+    match cond {
+        Expr::Operator(Op::Equals, lhs, rhs) => {
+            let (mut instructions, lhs_loc, rhs_loc, _) =
+                gen_pre_op(c, lhs, rhs);
+            instructions.push_back(format!("cmp {},{}", lhs_loc, rhs_loc));
+            instructions.push_back(format!("je {}", end_label));
+            instructions
+        },
+        _ => {
+            let (mut instructions, cond_loc, _) = gen_expr(c, cond);
+            instructions.push_back(format!("cmp $0,{}", cond_loc));
+            instructions.push_back(format!("je {}", end_label));
+            instructions
+        },
+    }
+}
+
 fn gen_if(
     c: &mut FunContext,
     cond: &Expr,
-    if_body: &Statement,
-    else_body: &Option<Box<Statement>>
+    if_body: &Statement
 ) -> LinkedList<String> {
-    let if_label = c.new_label("IF");
-
-    let (mut instructions, cond_loc, _) = gen_expr(c, cond);
-    instructions.push_back(format!("cmp $0,{}", cond_loc));
-    instructions.push_back(format!("je {}", if_label));
+    let if_end_label = c.new_label("IF");
+    let mut instructions = gen_cond_comparison(c, cond, &if_end_label);
     instructions.append(&mut gen_statement(c, if_body));
-    instructions.push_back(format!("{}:", if_label));
+    instructions.push_back(format!("{}:", if_end_label));
+    instructions
+}
 
-    // TODO: Conditionals should handle comparisons better
-
-    if !else_body.is_none() {
-        panic!("Else not implemented yet!");
-    }
-
+fn gen_if_else(
+    c: &mut FunContext,
+    cond: &Expr,
+    if_body: &Statement,
+    else_body: &Statement,
+) -> LinkedList<String> {
+    let if_end_label = c.new_label("IF");
+    let else_end_label = c.new_label("ELSE");
+    let mut instructions = gen_cond_comparison(c, cond, &if_end_label);
+    instructions.append(&mut gen_statement(c, if_body));
+    instructions.push_back(format!("jmp {}", else_end_label));
+    instructions.push_back(format!("{}:", if_end_label));
+    instructions.append(&mut gen_statement(c, else_body));
+    instructions.push_back(format!("{}:", else_end_label));
     instructions
 }
 
@@ -319,7 +363,8 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
             let (instructions, _, _) = gen_expr(c, expr);
             instructions
         },
-        Statement::If(cond, if_body, else_body) => gen_if(c, cond, if_body, else_body),
+        Statement::If(cond, if_body, None) => gen_if(c, cond, if_body),
+        Statement::If(cond, if_body, Some(else_body)) => gen_if_else(c, cond, if_body, else_body),
     }
 }
 
