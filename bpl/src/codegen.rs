@@ -157,17 +157,29 @@ fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<St
         instructions.push_back(format!("pushq {}", param_loc));
     }
 
-    // TODO: Don't push & pop from the stack unless it's necessary
+    let mut param_locs = vec!();
+
     for i in (0..std::cmp::min(6, params.len())).rev() {
         let param = &params[i];
         let (mut param_instructions, param_loc, _) = gen_expr(c, param);
         instructions.append(&mut param_instructions);
-        instructions.push_back(format!("pushq {}", param_loc));
+
+        param_locs.push(param_loc);
+
+        if param_loc.is_reg() {
+            instructions.push_back(format!("pushq {}", param_loc));
+        }
     }
 
     for i in 0..std::cmp::min(6, params.len()) {
         let reg = register_for_arg_num(i);
-        instructions.push_back(format!("popq %{}", reg));
+        let param_loc = param_locs[i];
+
+        if param_loc.is_reg() {
+            instructions.push_back(format!("popq %{}", reg));
+        } else {
+            instructions.push_back(format!("movq {},%{}", param_loc, reg));
+        }
     }
 
     instructions.push_back(format!("call {}", name));

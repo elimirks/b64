@@ -29,6 +29,15 @@ pub enum Loc {
     Immediate(i64),
 }
 
+impl Loc {
+    pub fn is_reg(&self) -> bool {
+        match self {
+            Loc::Register(_) => true,
+            _                => false,
+        }
+    }
+}
+
 impl fmt::Display for Reg {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
