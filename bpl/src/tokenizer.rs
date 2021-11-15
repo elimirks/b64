@@ -112,7 +112,7 @@ fn get_tok_symbol(c: &mut ParseContext) -> Option<Token> {
         '-' => multi_tok!(c, Token::Minus,
                           '-', Token::MinusMinus),
         '=' => multi_tok!(c, Token::Eq,
-                          '-', Token::EqEq),
+                          '=', Token::EqEq),
         '>' => multi_tok!(c, Token::Gt,
                           '>', Token::ShiftRight,
                           '=', Token::Ge),

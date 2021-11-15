@@ -12,6 +12,7 @@ pub enum Statement {
     Null, // "no op" essentially
     Auto(Vec<String>),
     Block(Vec<Statement>),
+    If(Expr, Box<Statement>, Option<Box<Statement>>),
 }
 
 #[derive(Debug)]
@@ -29,4 +30,5 @@ pub enum Expr {
 pub enum Op {
     Add,
     Sub,
+    Equals,
 }

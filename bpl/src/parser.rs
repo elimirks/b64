@@ -102,6 +102,7 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
         Token::Return    => parse_statement_return(c),
         Token::LBrace    => parse_statement_block(c),
         Token::Auto      => parse_statement_auto(c),
+        Token::If        => parse_statement_if(c),
         Token::Semicolon => Some(Statement::Null),
         _ => {
             c.offset = initial_offset;
@@ -146,6 +147,44 @@ fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
     }
 
     Some(Statement::Auto(ids))
+}
+
+// Expect "if" to have been parsed already
+fn parse_statement_if(c: &mut ParseContext) -> Option<Statement> {
+    if !parse_tok(c, Token::LParen) {
+        return None;
+    }
+
+    let cond_expr = parse_expr(c);
+    if cond_expr.is_none() {
+        return None;
+    }
+
+    if !parse_tok(c, Token::RParen) {
+        return None;
+    }
+
+    let if_body = parse_statement(c);
+    if if_body.is_none() {
+        return None;
+    }
+
+    let else_body = match peek_tok(c) {
+        Some(Token::Else) => {
+            get_tok(c); // Actually consume it
+            match parse_statement(c) {
+                Some(body) => Some(Box::new(body)),
+                _          => return None,
+            }
+        },
+        _ => None,
+    };
+
+    Some(Statement::If(
+        cond_expr.unwrap(),
+        Box::new(if_body.unwrap()),
+        else_body
+    ))
 }
 
 // Expects opening `{` to have been parsed
@@ -244,6 +283,7 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
         },
         Token::Plus  => chain_expr(c, first_expr.unwrap(), Op::Add),
         Token::Minus => chain_expr(c, first_expr.unwrap(), Op::Sub),
+        Token::EqEq  => chain_expr(c, first_expr.unwrap(), Op::Equals),
         _ => {
             // The next token isn't a chaining token... Rewind!
             c.offset = initial_offset;

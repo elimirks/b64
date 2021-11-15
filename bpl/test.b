@@ -8,8 +8,17 @@ test(a) {
     return(a + c);
 }
 
-add(a, b) return(a + b);
+add(a, b) {
+  return(a + b);
+}
+
+/* Assumes n >= 0 */
+fib(n) {
+  if (n == 0) return(0);
+  if (n == 1) return(1);
+  return(fib(n - 1) + fib(n - 2));
+}
 
 main() {
-    return(add(1, 3));
+    return(fib(10));
 }
