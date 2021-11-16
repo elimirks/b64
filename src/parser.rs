@@ -284,6 +284,10 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
         Token::Plus  => chain_expr(c, first_expr.unwrap(), Op::Add),
         Token::Minus => chain_expr(c, first_expr.unwrap(), Op::Sub),
         Token::EqEq  => chain_expr(c, first_expr.unwrap(), Op::Equals),
+        Token::Le    => chain_expr(c, first_expr.unwrap(), Op::Le),
+        Token::Lt    => chain_expr(c, first_expr.unwrap(), Op::Lt),
+        Token::Ge    => chain_expr(c, first_expr.unwrap(), Op::Ge),
+        Token::Gt    => chain_expr(c, first_expr.unwrap(), Op::Gt),
         _ => {
             // The next token isn't a chaining token... Rewind!
             c.offset = initial_offset;

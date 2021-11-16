@@ -31,4 +31,21 @@ pub enum Op {
     Add,
     Sub,
     Equals,
+    Le,
+    Ge,
+    Lt,
+    Gt,
+}
+
+impl Op {
+    pub fn is_comparison(&self) -> bool {
+        match self {
+            Op::Equals => true,
+            Op::Le     => true,
+            Op::Ge     => true,
+            Op::Lt     => true,
+            Op::Gt     => true,
+            _      => false,
+        }
+    }
 }

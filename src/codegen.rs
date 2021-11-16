@@ -94,26 +94,32 @@ fn register_for_arg_num(num: usize) -> Reg {
     }
 }
 
-// Assumes dest is a register
-fn gen_op_command(op: &Op, src: Loc, dest: Loc) -> (LinkedList<String>, Loc, Option<Reg>) {
+/**
+ * Generates instructions for applying the operator to the given lhs & rhs.
+ * May override either lhs_loc or rhs_loc if they are registers.
+ * ASSUMES lhs_loc is already in a register
+ * @return (instructions, dest_loc)
+ */
+fn gen_op_command(op: &Op, rhs_loc: Loc, lhs_loc: Loc) -> (LinkedList<String>, Loc) {
     let mut instructions = LinkedList::new();
 
     match op {
         Op::Add => {
-            instructions.push_back(format!("addq {},{}", src, dest));
-            (instructions, dest, None)
+            instructions.push_back(format!("addq {},{}", rhs_loc, lhs_loc));
+            (instructions, lhs_loc)
         },
         Op::Sub => {
-            instructions.push_back(format!("subq {},{}", src, dest));
-            (instructions, dest, None)
+            instructions.push_back(format!("subq {},{}", rhs_loc, lhs_loc));
+            (instructions, lhs_loc)
         },
         Op::Equals => {
-            instructions.push_back(format!("cmp {},{}", src, dest));
-            instructions.push_back(format!("lahf"));
-            // Select zero flag
-            instructions.push_back(format!("andq $0x4000,%rax"));
-            (instructions, Loc::Register(Reg::Rax), Some(Reg::Rax))
+            instructions.push_back(format!("cmpq {},{}", rhs_loc, lhs_loc));
+            instructions.push_back(format!("pushfq"));
+            instructions.push_back(format!("popfq {}", lhs_loc));
+            instructions.push_back(format!("andq $0x40,{}", lhs_loc));
+            (instructions, lhs_loc)
         },
+        op => panic!("Operator {:?} not implemented", op),
     }
 }
 
@@ -121,25 +127,32 @@ fn gen_op_command(op: &Op, src: Loc, dest: Loc) -> (LinkedList<String>, Loc, Opt
  * Plans evaluation strategy for an LHS and RHS expression.
  * It will try to store the LHS value in a register if possible.
  * Otherwise it stores to the stack.
+ * The returned lhs_loc is guaranteed to be in a register
  * @return (instructions, lhs_loc, rhs_loc, used_registers)
  */
 fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Loc, Vec<Reg>) {
     // Generate instructions for RHS first so we know which registers are safe
     let (mut rhs_ins, rhs_loc, mut used_registers) = gen_expr(c, rhs);
-    let mut avail_registers: HashSet<&Reg> =
+    let mut safe_registers: HashSet<&Reg> =
         USABLE_CALLER_SAVE_REG.into_iter().collect();
     for reg in &used_registers {
-        avail_registers.remove(&reg.clone());
+        safe_registers.remove(&reg.clone());
     }
 
-    // TODO: If lhs_loc is not even in a register, don't bother moving it
     let (mut lhs_ins, lhs_loc, mut lhs_registers) = gen_expr(c, lhs);
     used_registers.append(&mut lhs_registers);
 
-    let new_lhs_loc = match avail_registers.iter().next() {
+    // If the lhs_loc is already in a safe register, don't move it
+    if let Loc::Register(lhs_reg) = lhs_loc {
+        if safe_registers.contains(&lhs_reg) {
+            lhs_ins.append(&mut rhs_ins);
+            return (lhs_ins, lhs_loc, rhs_loc, used_registers);
+        }
+    }
+
+    let new_lhs_loc = match safe_registers.iter().next() {
         // If there are safe registers available, store the lhs there
         Some(dest_reg) => {
-            // TODO: If the lhs_loc is already in a safe register, don't move it
             used_registers.push(**dest_reg);
             lhs_ins.push_back(format!("movq {},%{}", lhs_loc, dest_reg));
             lhs_ins.append(&mut rhs_ins);
@@ -178,16 +191,11 @@ fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Lo
 }
 
 fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
-    let (mut instructions, dest_loc, rhs_loc, mut used_registers) =
+    let (mut instructions, lhs_loc, rhs_loc, used_registers) =
         gen_pre_op(c, lhs, rhs);
 
     // Run the command!
-    let (mut op_ins, op_loc, op_reg) =
-        gen_op_command(op, rhs_loc, dest_loc);
-
-    if let Some(reg) = op_reg {
-        used_registers.push(reg);
-    }
+    let (mut op_ins, op_loc) = gen_op_command(op, rhs_loc, lhs_loc);
 
     instructions.append(&mut op_ins);
 
@@ -303,14 +311,14 @@ fn gen_cond_comparison(
         Expr::Operator(Op::Equals, lhs, rhs) => {
             let (mut instructions, lhs_loc, rhs_loc, _) =
                 gen_pre_op(c, lhs, rhs);
-            instructions.push_back(format!("cmp {},{}", lhs_loc, rhs_loc));
-            instructions.push_back(format!("je {}", end_label));
+            instructions.push_back(format!("cmpq {},{}", rhs_loc, lhs_loc));
+            instructions.push_back(format!("jne {}", end_label));
             instructions
         },
         _ => {
             let (mut instructions, cond_loc, _) = gen_expr(c, cond);
-            instructions.push_back(format!("cmp $0,{}", cond_loc));
-            instructions.push_back(format!("je {}", end_label));
+            instructions.push_back(format!("cmpq $0,{}", cond_loc));
+            instructions.push_back(format!("jne {}", end_label));
             instructions
         },
     }
