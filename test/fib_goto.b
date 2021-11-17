@@ -5,7 +5,7 @@ fib(n) {
   curr = 1;
 
 begin:
-  if (i < n) return(curr);
+  if (i >= n) return(curr);
   next = curr + prev;
   prev = curr;
   curr = next;

@@ -9,6 +9,8 @@ use crate::memory::*;
 
 struct FunContext {
     variables: HashMap<String, Loc>,
+    // Maps from visible label name to compiled label name
+    labels: HashMap<String, String>,
     // So we never run out of unique labels
     label_counter: usize,
 }
@@ -22,11 +24,11 @@ impl FunContext {
 }
 
 /**
- * Allocates stack memory for auto variables
+ * Allocates stack memory for auto variables and finds labels.
  * @param body The function body to search for auto declarations
  * @param offset The positive offset from rbp (how much space came before this)
  */
-fn alloc_autos(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<String> {
+fn prepass_gen(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<String> {
     let mut instructions = LinkedList::new();
     let mut stack = vec!(body);
     let mut autos_size = 0;
@@ -34,8 +36,20 @@ fn alloc_autos(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<
     // DFS to find them all
     while !stack.is_empty() {
         match stack.pop().unwrap() {
+            Statement::Label(name) => {
+                if c.labels.contains_key(name) {
+                    panic!("Label {} already defined in this function", name);
+                }
+
+                let l = c.new_label(&format!("LAB_{}", name).to_string());
+                c.labels.insert(name.clone(), l);
+            },
             Statement::Auto(vars) => {
                 for var in vars {
+                    if c.variables.contains_key(var) {
+                        panic!("{} already defined in this function", var);
+                    }
+
                     c.variables.insert(
                         var.clone(),
                         Loc::Stack(-offset - autos_size)
@@ -426,16 +440,20 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
     match body {
         Statement::Null => LinkedList::new(),
         Statement::Goto(name) => {
-            let mut instructions = LinkedList::new();
-            instructions.push_back(format!("jmp .LAB_{}", name));
-            instructions
+            match c.labels.get(name) {
+                Some(label) => {
+                    let mut instructions = LinkedList::new();
+                    instructions.push_back(format!("jmp {}", label));
+                    instructions
+                },
+                None => panic!("Label '{}' not defined in this function", name),
+            }
         },
+        // Statements that we preprocess
         Statement::Label(name) => {
-            // TODO: Add the label to the function scope. Die if it exists
-            // TODO: Do a pre-pass to look for labels, like with autos.
-            // TODO: Add UID
             let mut instructions = LinkedList::new();
-            instructions.push_back(format!(".LAB_{}", name));
+            // We preprocess the labels, so we know it must exist
+            instructions.push_back(format!("{}:", c.labels.get(name).unwrap()));
             instructions
         },
         Statement::Return => gen_return(),
@@ -447,7 +465,6 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
             }
             instructions
         },
-        Statement::Auto(_) => LinkedList::new(),
         Statement::Expr(expr) => {
             let (instructions, _, _) = gen_expr(c, expr);
             instructions
@@ -455,6 +472,7 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
         Statement::If(cond, if_body, None)            => gen_if(c, cond, if_body),
         Statement::If(cond, if_body, Some(else_body)) => gen_if_else(c, cond, if_body, else_body),
         Statement::While(cond, body)                  => gen_while(c, cond, body),
+        Statement::Auto(_)  => LinkedList::new(),
     }
 }
 
@@ -467,7 +485,7 @@ fn gen_fun(c: &mut FunContext, args: Vec<String>, body: Statement) -> LinkedList
     // Prepare initial stack memory
     instructions.append(&mut alloc_args(c, &args));
     instructions.append(
-        &mut alloc_autos(c, &body, 1 + std::cmp::min(6, args.len() as i64))
+        &mut prepass_gen(c, &body, 1 + std::cmp::min(6, args.len() as i64))
     );
 
     instructions.append(&mut gen_statement(c, &body));
@@ -499,13 +517,17 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
 
     let mut c = FunContext {
         variables: HashMap::new(),
+        labels: HashMap::new(),
         label_counter: 0,
     };
 
     for statement in statements {
         match statement {
             RootStatement::Function(name, args, body) => {
+                // FIXME: I kinda hate this
                 c.variables.clear();
+                c.labels.clear();
+
                 let instructions = gen_fun(&mut c, args, body);
                 writeln!(w, "{}:", name)
                     .expect("Failed writing to output");

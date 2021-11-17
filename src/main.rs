@@ -22,7 +22,10 @@ struct Opts {
     output: String,
     /// Write output assembly to stdout instead of fully compiling
     #[clap(short, long)]
-    no_bin: bool
+    no_bin: bool,
+    /// Run the program immediately, not saving the binary
+    #[clap(short, long)]
+    run: bool,
 }
 
 fn main() {
@@ -35,22 +38,39 @@ fn main() {
         let mut stdout = io::stdout();
         generate(parse(contents), &mut stdout);
     } else {
-        let tmp_file_path = "/tmp/bpl.s";
+        let tmp_file_path = "/tmp/b64.s";
         let mut tmp_file = fs::File::create(tmp_file_path)
             .expect("Couldn't create temp asm file");
 
         generate(parse(contents), &mut tmp_file);
 
-        // TODO: Output stderr if appropriate
-        Command::new("gcc")
+        let output_path = if opts.run {
+            "/tmp/b64.bin".to_string()
+        } else {
+            opts.output
+        };
+
+        let gcc_status = Command::new("gcc")
             .arg("-nostdlib")
             .arg(tmp_file_path)
             .arg("-o")
-            .arg(opts.output)
-            .output()
+            .arg(&output_path)
+            .status()
             .expect("Failed running GCC");
 
-        fs::remove_file(tmp_file_path)
-            .expect("Failed removing temp file");
+        fs::remove_file(tmp_file_path).unwrap();
+
+        if !gcc_status.success() {
+            std::process::exit(gcc_status.code().unwrap());
+        }
+
+        if opts.run {
+            let prog_status = Command::new(&output_path)
+                .status()
+                .expect("Failed running program");
+
+            fs::remove_file(output_path).unwrap();
+            std::process::exit(prog_status.code().unwrap());
+        }
     }
 }
