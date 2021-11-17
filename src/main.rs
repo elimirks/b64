@@ -41,6 +41,7 @@ fn main() {
 
         generate(parse(contents), &mut tmp_file);
 
+        // TODO: Output stderr if appropriate
         Command::new("gcc")
             .arg("-nostdlib")
             .arg(tmp_file_path)

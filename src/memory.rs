@@ -9,6 +9,29 @@ pub enum Reg {
     R12, R13, R14, R15,
 }
 
+impl Reg {
+    pub fn low_byte(&self) -> &str {
+        match self {
+            Reg::Rax => "al",
+            Reg::Rbx => "bl",
+            Reg::Rcx => "cl",
+            Reg::Rdx => "dl",
+            Reg::Rdi => "dil",
+            Reg::Rsi => "sil",
+            Reg::Rbp => "bpl",
+            Reg::Rsp => "spl",
+            Reg::R8  => "r8b",
+            Reg::R9  => "r9b",
+            Reg::R10 => "r10b",
+            Reg::R11 => "r11b",
+            Reg::R12 => "r12b",
+            Reg::R13 => "r13b",
+            Reg::R14 => "r14b",
+            Reg::R15 => "r15b",
+        }
+    }
+}
+
 // Caller save registers, except for %rsp
 pub const USABLE_CALLER_SAVE_REG: &'static [Reg] = &[
     Reg::Rax, Reg::Rcx, Reg::Rdx, Reg::Rdi,

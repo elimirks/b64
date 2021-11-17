@@ -94,32 +94,41 @@ fn register_for_arg_num(num: usize) -> Reg {
     }
 }
 
+fn gen_op_cmp(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
+    let mut instructions = LinkedList::new();
+    instructions.push_back(format!("cmpq {},{}", rhs_loc, lhs_loc));
+    instructions.push_back(format!("movq $0,{}", lhs_loc));
+
+    if let Loc::Register(lhs_reg) = lhs_loc {
+        instructions.push_back(format!("{} %{}", command, lhs_reg.low_byte()));
+    } else {
+        panic!("LHS must be a register");
+    }
+
+    (instructions, lhs_loc)
+}
+
+fn gen_op_single(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
+    let mut instructions = LinkedList::new();
+    instructions.push_back(format!("{} {},{}", command, rhs_loc, lhs_loc));
+    (instructions, lhs_loc)
+}
+
 /**
  * Generates instructions for applying the operator to the given lhs & rhs.
  * May override either lhs_loc or rhs_loc if they are registers.
  * ASSUMES lhs_loc is already in a register
- * @return (instructions, dest_loc)
+ * @return (instructions, dest_loc, extra_reg)
  */
-fn gen_op_command(op: &Op, rhs_loc: Loc, lhs_loc: Loc) -> (LinkedList<String>, Loc) {
-    let mut instructions = LinkedList::new();
-
+fn gen_op_command(op: &Op, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
     match op {
-        Op::Add => {
-            instructions.push_back(format!("addq {},{}", rhs_loc, lhs_loc));
-            (instructions, lhs_loc)
-        },
-        Op::Sub => {
-            instructions.push_back(format!("subq {},{}", rhs_loc, lhs_loc));
-            (instructions, lhs_loc)
-        },
-        Op::Equals => {
-            instructions.push_back(format!("cmpq {},{}", rhs_loc, lhs_loc));
-            instructions.push_back(format!("pushfq"));
-            instructions.push_back(format!("popfq {}", lhs_loc));
-            instructions.push_back(format!("andq $0x40,{}", lhs_loc));
-            (instructions, lhs_loc)
-        },
-        op => panic!("Operator {:?} not implemented", op),
+        Op::Add    => gen_op_single("addq", lhs_loc, rhs_loc),
+        Op::Sub    => gen_op_single("subq", lhs_loc, rhs_loc),
+        Op::Equals => gen_op_cmp("sete", lhs_loc, rhs_loc),
+        Op::Le     => gen_op_cmp("setle", lhs_loc, rhs_loc),
+        Op::Lt     => gen_op_cmp("setl", lhs_loc, rhs_loc),
+        Op::Ge     => gen_op_cmp("setge", lhs_loc, rhs_loc),
+        Op::Gt     => gen_op_cmp("setg", lhs_loc, rhs_loc),
     }
 }
 
@@ -195,8 +204,7 @@ fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String
         gen_pre_op(c, lhs, rhs);
 
     // Run the command!
-    let (mut op_ins, op_loc) = gen_op_command(op, rhs_loc, lhs_loc);
-
+    let (mut op_ins, op_loc) = gen_op_command(op, lhs_loc, rhs_loc);
     instructions.append(&mut op_ins);
 
     (instructions, op_loc, used_registers)
@@ -302,23 +310,40 @@ fn gen_return() -> LinkedList<String> {
     instructions
 }
 
-fn gen_cond_comparison(
+fn gen_cond_cmp(
+    c: &mut FunContext,
+    jump_command: &str,
+    lhs: &Expr,
+    rhs: &Expr,
+    end_label: &String
+) -> LinkedList<String> {
+    let (mut instructions, lhs_loc, rhs_loc, _) = gen_pre_op(c, lhs, rhs);
+    instructions.push_back(format!("cmpq {},{}", rhs_loc, lhs_loc));
+    instructions.push_back(format!("{} {}", jump_command, end_label));
+    instructions
+}
+
+fn gen_cond(
     c: &mut FunContext,
     cond: &Expr,
     end_label: &String
 ) -> LinkedList<String> {
     match cond {
-        Expr::Operator(Op::Equals, lhs, rhs) => {
-            let (mut instructions, lhs_loc, rhs_loc, _) =
-                gen_pre_op(c, lhs, rhs);
-            instructions.push_back(format!("cmpq {},{}", rhs_loc, lhs_loc));
-            instructions.push_back(format!("jne {}", end_label));
-            instructions
-        },
+        Expr::Operator(Op::Equals, lhs, rhs) =>
+            gen_cond_cmp(c, "jne", lhs, rhs, end_label),
+        Expr::Operator(Op::Gt, lhs, rhs) =>
+            gen_cond_cmp(c, "jle", lhs, rhs, end_label),
+        Expr::Operator(Op::Ge, lhs, rhs) =>
+            gen_cond_cmp(c, "jl", lhs, rhs, end_label),
+        Expr::Operator(Op::Lt, lhs, rhs) =>
+            gen_cond_cmp(c, "jge", lhs, rhs, end_label),
+        Expr::Operator(Op::Le, lhs, rhs) =>
+            gen_cond_cmp(c, "jg", lhs, rhs, end_label),
         _ => {
+            // Fallback to evaluating the entire conditional expression
             let (mut instructions, cond_loc, _) = gen_expr(c, cond);
             instructions.push_back(format!("cmpq $0,{}", cond_loc));
-            instructions.push_back(format!("jne {}", end_label));
+            instructions.push_back(format!("jz {}", end_label));
             instructions
         },
     }
@@ -330,7 +355,7 @@ fn gen_if(
     if_body: &Statement
 ) -> LinkedList<String> {
     let if_end_label = c.new_label("IF");
-    let mut instructions = gen_cond_comparison(c, cond, &if_end_label);
+    let mut instructions = gen_cond(c, cond, &if_end_label);
     instructions.append(&mut gen_statement(c, if_body));
     instructions.push_back(format!("{}:", if_end_label));
     instructions
@@ -344,7 +369,7 @@ fn gen_if_else(
 ) -> LinkedList<String> {
     let if_end_label = c.new_label("IF");
     let else_end_label = c.new_label("ELSE");
-    let mut instructions = gen_cond_comparison(c, cond, &if_end_label);
+    let mut instructions = gen_cond(c, cond, &if_end_label);
     instructions.append(&mut gen_statement(c, if_body));
     instructions.push_back(format!("jmp {}", else_end_label));
     instructions.push_back(format!("{}:", if_end_label));
@@ -376,24 +401,19 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
     }
 }
 
-fn gen_fun(args: Vec<String>, body: Statement) -> LinkedList<String> {
-    let mut c = FunContext {
-        variables: HashMap::new(),
-        label_counter: 0,
-    };
-
+fn gen_fun(c: &mut FunContext, args: Vec<String>, body: Statement) -> LinkedList<String> {
     let mut instructions = LinkedList::new();
     // Save base pointer, since it's callee-saved
     instructions.push_back(format!("pushq %rbp"));
     instructions.push_back(format!("movq %rsp,%rbp"));
 
     // Prepare initial stack memory
-    instructions.append(&mut alloc_args(&mut c, &args));
+    instructions.append(&mut alloc_args(c, &args));
     instructions.append(
-        &mut alloc_autos(&mut c, &body, 1 + std::cmp::min(6, args.len() as i64))
+        &mut alloc_autos(c, &body, 1 + std::cmp::min(6, args.len() as i64))
     );
 
-    instructions.append(&mut gen_statement(&mut c, &body));
+    instructions.append(&mut gen_statement(c, &body));
 
     let trailing_ret = match instructions.back() {
         Some(instruction) => instruction == "ret",
@@ -420,10 +440,16 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
                  int $0x80"
     ).expect("Failed writing to output");
 
+    let mut c = FunContext {
+        variables: HashMap::new(),
+        label_counter: 0,
+    };
+
     for statement in statements {
         match statement {
             RootStatement::Function(name, args, body) => {
-                let instructions = gen_fun(args, body);
+                c.variables.clear();
+                let instructions = gen_fun(&mut c, args, body);
                 writeln!(w, "{}:", name)
                     .expect("Failed writing to output");
                 for instruction in instructions {

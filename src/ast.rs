@@ -38,6 +38,7 @@ pub enum Op {
 }
 
 impl Op {
+    #[allow(dead_code)]
     pub fn is_comparison(&self) -> bool {
         match self {
             Op::Equals => true,
