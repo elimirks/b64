@@ -10,6 +10,8 @@ pub enum Statement {
     ReturnExpr(Expr),
     Return,
     Null, // "no op" essentially
+    Label(String),
+    Goto(String),
     Auto(Vec<String>),
     Block(Vec<Statement>),
     If(Expr, Box<Statement>, Option<Box<Statement>>),

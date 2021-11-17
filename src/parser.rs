@@ -99,12 +99,14 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
     }
 
     match tok.unwrap() {
-        Token::Return    => parse_statement_return(c),
-        Token::LBrace    => parse_statement_block(c),
-        Token::Auto      => parse_statement_auto(c),
-        Token::If        => parse_statement_if(c),
-        Token::While     => parse_statement_while(c),
-        Token::Semicolon => Some(Statement::Null),
+        Token::Return      => parse_statement_return(c),
+        Token::LBrace      => parse_statement_block(c),
+        Token::Auto        => parse_statement_auto(c),
+        Token::If          => parse_statement_if(c),
+        Token::While       => parse_statement_while(c),
+        Token::Semicolon   => Some(Statement::Null),
+        Token::Label(name) => Some(Statement::Label(name)),
+        Token::Goto        => parse_statement_goto(c),
         _ => {
             c.offset = initial_offset;
             parse_statement_expr(c)
@@ -186,6 +188,23 @@ fn parse_statement_if(c: &mut ParseContext) -> Option<Statement> {
         Box::new(if_body.unwrap()),
         else_body
     ))
+}
+
+// Expect "goto" to have been parsed already
+fn parse_statement_goto(c: &mut ParseContext) -> Option<Statement> {
+    match get_tok(c) {
+        Some(Token::Id(name)) => {
+            if !parse_tok(c, Token::Semicolon) {
+                return None;
+            }
+
+            Some(Statement::Goto(name))
+        },
+        _ => {
+            c.error = Some("Expected ID".to_string());
+            None
+        },
+    }
 }
 
 // Expect "while" to have been parsed already

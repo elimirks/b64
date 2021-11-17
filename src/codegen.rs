@@ -425,6 +425,19 @@ fn gen_if_else(
 fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
     match body {
         Statement::Null => LinkedList::new(),
+        Statement::Goto(name) => {
+            let mut instructions = LinkedList::new();
+            instructions.push_back(format!("jmp .LAB_{}", name));
+            instructions
+        },
+        Statement::Label(name) => {
+            // TODO: Add the label to the function scope. Die if it exists
+            // TODO: Do a pre-pass to look for labels, like with autos.
+            // TODO: Add UID
+            let mut instructions = LinkedList::new();
+            instructions.push_back(format!(".LAB_{}", name));
+            instructions
+        },
         Statement::Return => gen_return(),
         Statement::ReturnExpr(expr) => gen_return_expr(c, expr),
         Statement::Block(statements) => {

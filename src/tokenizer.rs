@@ -4,6 +4,7 @@ use crate::parser::ParseContext;
 #[derive(Debug, PartialEq)]
 pub enum Token {
     Id(String),
+    Label(String),
     Int(i64),
     Return,
     Auto,
@@ -178,7 +179,17 @@ fn get_tok_word(c: &mut ParseContext) -> Option<Token> {
         "goto"   => Token::Goto,
         "switch" => Token::Switch,
         "break"  => Token::Break,
-        _        => Token::Id(str_word.to_string()),
+        _        => {
+            let name = str_word.to_string();
+
+            match c.peek_char() {
+                Some(':') => {
+                    c.offset += 1;
+                    Token::Label(name)
+                },
+                _ => Token::Id(name),
+            }
+        },
     };
 
     Some(tok)
