@@ -59,6 +59,13 @@ impl Loc {
             _                => false,
         }
     }
+
+    pub fn is_mem(&self) -> bool {
+        match self {
+            Loc::Stack(_) => true,
+            _             => false,
+        }
+    }
 }
 
 impl fmt::Display for Reg {

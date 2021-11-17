@@ -13,6 +13,7 @@ pub enum Statement {
     Auto(Vec<String>),
     Block(Vec<Statement>),
     If(Expr, Box<Statement>, Option<Box<Statement>>),
+    While(Expr, Box<Statement>),
 }
 
 #[derive(Debug)]
@@ -22,15 +23,14 @@ pub enum Expr {
     Int(i64),
     Assignment(String, Box<Expr>),
     Operator(Op, Box<Expr>, Box<Expr>),
-    // App(String, Vec<Box<Expr>>),
-    // Var(String),
 }
 
 #[derive(Debug)]
 pub enum Op {
     Add,
     Sub,
-    Equals,
+    Eq,
+    Ne,
     Le,
     Ge,
     Lt,
@@ -41,11 +41,12 @@ impl Op {
     #[allow(dead_code)]
     pub fn is_comparison(&self) -> bool {
         match self {
-            Op::Equals => true,
-            Op::Le     => true,
-            Op::Ge     => true,
-            Op::Lt     => true,
-            Op::Gt     => true,
+            Op::Eq => true,
+            Op::Ne => true,
+            Op::Le => true,
+            Op::Ge => true,
+            Op::Lt => true,
+            Op::Gt => true,
             _      => false,
         }
     }

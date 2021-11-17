@@ -103,6 +103,7 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
         Token::LBrace    => parse_statement_block(c),
         Token::Auto      => parse_statement_auto(c),
         Token::If        => parse_statement_if(c),
+        Token::While     => parse_statement_while(c),
         Token::Semicolon => Some(Statement::Null),
         _ => {
             c.offset = initial_offset;
@@ -184,6 +185,32 @@ fn parse_statement_if(c: &mut ParseContext) -> Option<Statement> {
         cond_expr.unwrap(),
         Box::new(if_body.unwrap()),
         else_body
+    ))
+}
+
+// Expect "while" to have been parsed already
+fn parse_statement_while(c: &mut ParseContext) -> Option<Statement> {
+    if !parse_tok(c, Token::LParen) {
+        return None;
+    }
+
+    let cond_expr = parse_expr(c);
+    if cond_expr.is_none() {
+        return None;
+    }
+
+    if !parse_tok(c, Token::RParen) {
+        return None;
+    }
+
+    let body = parse_statement(c);
+    if body.is_none() {
+        return None;
+    }
+
+    Some(Statement::While(
+        cond_expr.unwrap(),
+        Box::new(body.unwrap())
     ))
 }
 
@@ -283,11 +310,12 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
         },
         Token::Plus  => chain_expr(c, first_expr.unwrap(), Op::Add),
         Token::Minus => chain_expr(c, first_expr.unwrap(), Op::Sub),
-        Token::EqEq  => chain_expr(c, first_expr.unwrap(), Op::Equals),
+        Token::EqEq  => chain_expr(c, first_expr.unwrap(), Op::Eq),
         Token::Le    => chain_expr(c, first_expr.unwrap(), Op::Le),
         Token::Lt    => chain_expr(c, first_expr.unwrap(), Op::Lt),
         Token::Ge    => chain_expr(c, first_expr.unwrap(), Op::Ge),
         Token::Gt    => chain_expr(c, first_expr.unwrap(), Op::Gt),
+        Token::Ne    => chain_expr(c, first_expr.unwrap(), Op::Ne),
         _ => {
             // The next token isn't a chaining token... Rewind!
             c.offset = initial_offset;

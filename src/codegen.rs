@@ -48,6 +48,12 @@ fn alloc_autos(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<
                     stack.push(s);
                 }
             },
+            Statement::If(_, if_body, Some(else_body)) => {
+                stack.push(if_body);
+                stack.push(else_body);
+            },
+            Statement::If(_, body, None) => stack.push(body),
+            Statement::While(_, body)    => stack.push(body),
             _ => {},
         }
     }
@@ -122,13 +128,14 @@ fn gen_op_single(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<Strin
  */
 fn gen_op_command(op: &Op, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
     match op {
-        Op::Add    => gen_op_single("addq", lhs_loc, rhs_loc),
-        Op::Sub    => gen_op_single("subq", lhs_loc, rhs_loc),
-        Op::Equals => gen_op_cmp("sete", lhs_loc, rhs_loc),
-        Op::Le     => gen_op_cmp("setle", lhs_loc, rhs_loc),
-        Op::Lt     => gen_op_cmp("setl", lhs_loc, rhs_loc),
-        Op::Ge     => gen_op_cmp("setge", lhs_loc, rhs_loc),
-        Op::Gt     => gen_op_cmp("setg", lhs_loc, rhs_loc),
+        Op::Add => gen_op_single("addq", lhs_loc, rhs_loc),
+        Op::Sub => gen_op_single("subq", lhs_loc, rhs_loc),
+        Op::Eq  => gen_op_cmp("sete", lhs_loc, rhs_loc),
+        Op::Ne  => gen_op_cmp("setne", lhs_loc, rhs_loc),
+        Op::Le  => gen_op_cmp("setle", lhs_loc, rhs_loc),
+        Op::Lt  => gen_op_cmp("setl", lhs_loc, rhs_loc),
+        Op::Ge  => gen_op_cmp("setge", lhs_loc, rhs_loc),
+        Op::Gt  => gen_op_cmp("setg", lhs_loc, rhs_loc),
     }
 }
 
@@ -259,10 +266,37 @@ fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<St
     (instructions, Loc::Register(Reg::Rax), used_vars)
 }
 
+fn gen_expr_ass(c: &FunContext, lhs_name: &String, rhs: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    let (mut instructions, mut rhs_loc, mut used_registers) = gen_expr(c, rhs);
+
+    // Because we can't movq from memory to memory
+    if rhs_loc.is_mem() {
+        // Reuse a register if possible
+        let rhs_reg = match used_registers.last() {
+            Some(reg) => *reg,
+            None => {
+                used_registers.push(Reg::Rax);
+                Reg::Rax
+            },
+        };
+
+        instructions.push_back(format!("movq {},%{}", rhs_loc, rhs_reg));
+        rhs_loc = Loc::Register(rhs_reg);
+    }
+
+    match c.variables.get(lhs_name) {
+        Some(lhs_loc) => {
+            instructions.push_back(format!("movq {},{}", rhs_loc, lhs_loc));
+            (instructions, *lhs_loc, used_registers)
+        },
+        None => panic!("Variable {} not in scope", lhs_name),
+    }
+}
+
 /**
  * @return (instructions, location, used_registers)
  */
-fn gen_expr<'a>(c: &'a FunContext, expr: &'a Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
+fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
     match expr {
         Expr::Int(value) => {
             (LinkedList::new(), Loc::Immediate(*value), vec!())
@@ -273,19 +307,9 @@ fn gen_expr<'a>(c: &'a FunContext, expr: &'a Expr) -> (LinkedList<String>, Loc, 
                 None => panic!("Variable {} not in scope", name),
             }
         },
-        Expr::Assignment(lhs_name, rhs) => {
-            let (mut instructions, rhs_loc, used_registers) = gen_expr(c, rhs);
-
-            match c.variables.get(lhs_name) {
-                Some(lhs_loc) => {
-                    instructions.push_back(format!("movq {},{}", rhs_loc, lhs_loc));
-                    (instructions, *lhs_loc, used_registers)
-                },
-                None => panic!("Variable {} not in scope", lhs_name),
-            }
-        },
-        Expr::Operator(op, lhs, rhs) => gen_op(c, op, lhs, rhs),
-        Expr::Call(name, params)     => gen_call(c, name, params),
+        Expr::Assignment(lhs_name, rhs) => gen_expr_ass(c, lhs_name, rhs),
+        Expr::Operator(op, lhs, rhs)    => gen_op(c, op, lhs, rhs),
+        Expr::Call(name, params)        => gen_call(c, name, params),
     }
 }
 
@@ -329,8 +353,10 @@ fn gen_cond(
     end_label: &String
 ) -> LinkedList<String> {
     match cond {
-        Expr::Operator(Op::Equals, lhs, rhs) =>
+        Expr::Operator(Op::Eq, lhs, rhs) =>
             gen_cond_cmp(c, "jne", lhs, rhs, end_label),
+        Expr::Operator(Op::Ne, lhs, rhs) =>
+            gen_cond_cmp(c, "je", lhs, rhs, end_label),
         Expr::Operator(Op::Gt, lhs, rhs) =>
             gen_cond_cmp(c, "jle", lhs, rhs, end_label),
         Expr::Operator(Op::Ge, lhs, rhs) =>
@@ -354,10 +380,27 @@ fn gen_if(
     cond: &Expr,
     if_body: &Statement
 ) -> LinkedList<String> {
-    let if_end_label = c.new_label("IF");
+    let if_end_label = c.new_label("IF_END");
     let mut instructions = gen_cond(c, cond, &if_end_label);
     instructions.append(&mut gen_statement(c, if_body));
     instructions.push_back(format!("{}:", if_end_label));
+    instructions
+}
+
+fn gen_while(
+    c: &mut FunContext,
+    cond: &Expr,
+    body: &Statement
+) -> LinkedList<String> {
+    let mut instructions = LinkedList::new();
+    let while_begin_label = c.new_label("WHILE_BEGIN");
+    instructions.push_back(format!("{}:", while_begin_label));
+
+    let while_end_label = c.new_label("WHILE_END");
+    instructions.append(&mut gen_cond(c, cond, &while_end_label));
+    instructions.append(&mut gen_statement(c, body));
+    instructions.push_back(format!("jmp {}", while_begin_label));
+    instructions.push_back(format!("{}:", while_end_label));
     instructions
 }
 
@@ -367,8 +410,8 @@ fn gen_if_else(
     if_body: &Statement,
     else_body: &Statement,
 ) -> LinkedList<String> {
-    let if_end_label = c.new_label("IF");
-    let else_end_label = c.new_label("ELSE");
+    let if_end_label = c.new_label("IF_END");
+    let else_end_label = c.new_label("ELSE_END");
     let mut instructions = gen_cond(c, cond, &if_end_label);
     instructions.append(&mut gen_statement(c, if_body));
     instructions.push_back(format!("jmp {}", else_end_label));
@@ -396,8 +439,9 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
             let (instructions, _, _) = gen_expr(c, expr);
             instructions
         },
-        Statement::If(cond, if_body, None) => gen_if(c, cond, if_body),
+        Statement::If(cond, if_body, None)            => gen_if(c, cond, if_body),
         Statement::If(cond, if_body, Some(else_body)) => gen_if_else(c, cond, if_body, else_body),
+        Statement::While(cond, body)                  => gen_while(c, cond, body),
     }
 }
 
