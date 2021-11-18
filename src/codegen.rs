@@ -256,7 +256,7 @@ fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<St
 
     let mut param_locs = vec!();
 
-    for i in (0..std::cmp::min(6, params.len())).rev() {
+    for i in 0..std::cmp::min(6, params.len()) {
         let param = &params[i];
         let (mut param_instructions, param_loc, _) = gen_expr(c, param);
         instructions.append(&mut param_instructions);
@@ -268,7 +268,7 @@ fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<St
         }
     }
 
-    for i in 0..std::cmp::min(6, params.len()) {
+    for i in (0..std::cmp::min(6, params.len())).rev() {
         let reg = register_for_arg_num(i);
         let param_loc = param_locs[i];
 
@@ -518,14 +518,8 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
     let mut w = BufWriter::new(writer);
 
     // Call main, use the return value as the exit status
-    writeln!(w, ".text\n\
-                 .global _start\n\
-                 _start:\n\
-                 call main\n\
-                 movq %rax,%rbx\n\
-                 movq $1,%rax\n\
-                 int $0x80"
-    ).expect("Failed writing to output");
+    writeln!(w, include_str!("../assets/stdlib.s"))
+        .expect("Failed writing to output");
 
     let mut c = FunContext {
         variables: HashMap::new(),

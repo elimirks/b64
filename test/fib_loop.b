@@ -4,7 +4,6 @@ fib(n) {
   prev = 0;
   curr = 1;
 
-  /* TODO: Give the illusion of scope w.r.t. auto */
   while (i < n) {
     auto next;
     next = curr + prev;
