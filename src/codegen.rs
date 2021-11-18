@@ -13,6 +13,8 @@ struct FunContext {
     labels: HashMap<String, String>,
     // So we never run out of unique labels
     label_counter: usize,
+    // Stack of end labels where to tell break where to jump to
+    break_dest_stack: Vec<String>,
 }
 
 impl FunContext {
@@ -409,12 +411,17 @@ fn gen_while(
     let mut instructions = LinkedList::new();
     let while_begin_label = c.new_label("WHILE_BEGIN");
     instructions.push_back(format!("{}:", while_begin_label));
-
     let while_end_label = c.new_label("WHILE_END");
+
+    c.break_dest_stack.push(while_end_label.clone());
+
     instructions.append(&mut gen_cond(c, cond, &while_end_label));
     instructions.append(&mut gen_statement(c, body));
     instructions.push_back(format!("jmp {}", while_begin_label));
     instructions.push_back(format!("{}:", while_end_label));
+
+    c.break_dest_stack.pop();
+
     instructions
 }
 
@@ -439,6 +446,17 @@ fn gen_if_else(
 fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
     match body {
         Statement::Null => LinkedList::new(),
+        Statement::Break => {
+            match c.break_dest_stack.last() {
+                Some(label) => {
+                    let mut instructions = LinkedList::new();
+                    instructions.push_back(format!("jmp {}", label));
+                    instructions
+                },
+                None => panic!("Cannot break from this location"),
+            }
+            // FIXME: Pop from stack
+        },
         Statement::Goto(name) => {
             match c.labels.get(name) {
                 Some(label) => {
@@ -519,6 +537,7 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
         variables: HashMap::new(),
         labels: HashMap::new(),
         label_counter: 0,
+        break_dest_stack: vec!(),
     };
 
     for statement in statements {

@@ -9,6 +9,7 @@ pub enum Statement {
     Expr(Expr),
     ReturnExpr(Expr),
     Return,
+    Break,
     Null, // "no op" essentially
     Label(String),
     Goto(String),

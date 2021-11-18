@@ -100,6 +100,7 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
 
     match tok.unwrap() {
         Token::Return      => parse_statement_return(c),
+        Token::Break       => parse_statement_break(c),
         Token::LBrace      => parse_statement_block(c),
         Token::Auto        => parse_statement_auto(c),
         Token::If          => parse_statement_if(c),
@@ -255,6 +256,15 @@ fn parse_statement_block(c: &mut ParseContext) -> Option<Statement> {
     }
 
     Some(Statement::Block(statements))
+}
+
+// Expects the `break` keyword to have been parsed already
+fn parse_statement_break(c: &mut ParseContext) -> Option<Statement> {
+    if !parse_tok(c, Token::Semicolon) {
+        return None;
+    }
+
+    Some(Statement::Break)
 }
 
 // Expects the `return` keyword to have been parsed already
