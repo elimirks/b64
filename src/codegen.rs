@@ -25,13 +25,25 @@ impl FunContext {
     }
 }
 
+// Make it easier to create linked lists
+macro_rules! ll {
+    ($($entry:expr),*) => {{
+        #[allow(unused_mut)]
+        let mut list = LinkedList::new();
+        $(
+            list.push_back($entry);
+        )*
+        list
+    }};
+}
+
 /**
  * Allocates stack memory for auto variables and finds labels.
  * @param body The function body to search for auto declarations
  * @param offset The positive offset from rbp (how much space came before this)
  */
 fn prepass_gen(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<String> {
-    let mut instructions = LinkedList::new();
+    let mut instructions = ll!();
     let mut stack = vec!(body);
     let mut autos_size = 0;
 
@@ -83,7 +95,7 @@ fn prepass_gen(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<
 
 // Allocates the necessary args on the stack
 fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
-    let mut instructions = LinkedList::new();
+    let mut instructions = ll!();
     for i in 0..args.len() {
         if i < 6 {
             let register = register_for_arg_num(i);
@@ -117,9 +129,8 @@ fn register_for_arg_num(num: usize) -> Reg {
 }
 
 fn gen_op_cmp(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
-    let mut instructions = LinkedList::new();
-    instructions.push_back(format!("cmpq {},{}", rhs_loc, lhs_loc));
-    instructions.push_back(format!("movq $0,{}", lhs_loc));
+    let mut instructions = ll!(format!("cmpq {},{}", rhs_loc, lhs_loc),
+                               format!("movq $0,{}", lhs_loc));
 
     if let Loc::Register(lhs_reg) = lhs_loc {
         instructions.push_back(format!("{} %{}", command, lhs_reg.low_byte()));
@@ -131,9 +142,7 @@ fn gen_op_cmp(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>,
 }
 
 fn gen_op_single(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
-    let mut instructions = LinkedList::new();
-    instructions.push_back(format!("{} {},{}", command, rhs_loc, lhs_loc));
-    (instructions, lhs_loc)
+    (ll!(format!("{} {},{}", command, rhs_loc, lhs_loc)), lhs_loc)
 }
 
 /**
@@ -234,7 +243,7 @@ fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String
 }
 
 fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<String>, Loc, Vec<Reg>) {
-    let mut instructions = LinkedList::new();
+    let mut instructions = ll!();
 
     // Evaluate backwards until the 7th var.
     // Since the 7th+ params have to be on the stack anyways
@@ -315,11 +324,11 @@ fn gen_expr_ass(c: &FunContext, lhs_name: &String, rhs: &Expr) -> (LinkedList<St
 fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
     match expr {
         Expr::Int(value) => {
-            (LinkedList::new(), Loc::Immediate(*value), vec!())
+            (ll!(), Loc::Immediate(*value), vec!())
         },
         Expr::Id(name) => {
             match c.variables.get(name) {
-                Some(location) => (LinkedList::new(), *location, vec!()),
+                Some(location) => (ll!(), *location, vec!()),
                 None => panic!("Variable {} not in scope", name),
             }
         },
@@ -343,11 +352,9 @@ fn gen_return_expr(c: &FunContext, expr: &Expr) -> LinkedList<String> {
 }
 
 fn gen_return() -> LinkedList<String> {
-    let mut instructions = LinkedList::new();
-    instructions.push_back("movq $0,%rax".to_string());
-    instructions.push_back("leave".to_string());
-    instructions.push_back("ret".to_string());
-    instructions
+    ll!("movq $0,%rax".to_string(),
+        "leave".to_string(),
+        "ret".to_string())
 }
 
 fn gen_cond_cmp(
@@ -408,7 +415,7 @@ fn gen_while(
     cond: &Expr,
     body: &Statement
 ) -> LinkedList<String> {
-    let mut instructions = LinkedList::new();
+    let mut instructions = ll!();
     let while_begin_label = c.new_label("WHILE_BEGIN");
     instructions.push_back(format!("{}:", while_begin_label));
     let while_end_label = c.new_label("WHILE_END");
@@ -445,39 +452,27 @@ fn gen_if_else(
 // Returns true if the last statement is a return
 fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
     match body {
-        Statement::Null => LinkedList::new(),
+        Statement::Null => ll!(),
         Statement::Break => {
             match c.break_dest_stack.last() {
-                Some(label) => {
-                    let mut instructions = LinkedList::new();
-                    instructions.push_back(format!("jmp {}", label));
-                    instructions
-                },
+                Some(label) => ll!(format!("jmp {}", label)),
                 None => panic!("Cannot break from this location"),
             }
             // FIXME: Pop from stack
         },
         Statement::Goto(name) => {
             match c.labels.get(name) {
-                Some(label) => {
-                    let mut instructions = LinkedList::new();
-                    instructions.push_back(format!("jmp {}", label));
-                    instructions
-                },
+                Some(label) => ll!(format!("jmp {}", label)),
                 None => panic!("Label '{}' not defined in this function", name),
             }
         },
-        // Statements that we preprocess
-        Statement::Label(name) => {
-            let mut instructions = LinkedList::new();
-            // We preprocess the labels, so we know it must exist
-            instructions.push_back(format!("{}:", c.labels.get(name).unwrap()));
-            instructions
-        },
+        // We preprocess the labels, so we know it must exist
+        Statement::Label(name) =>
+            ll!(format!("{}:", c.labels.get(name).unwrap())),
         Statement::Return => gen_return(),
         Statement::ReturnExpr(expr) => gen_return_expr(c, expr),
         Statement::Block(statements) => {
-            let mut instructions = LinkedList::new();
+            let mut instructions = ll!();
             for statement in statements {
                 instructions.append(&mut gen_statement(c, statement))
             }
@@ -490,15 +485,14 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
         Statement::If(cond, if_body, None)            => gen_if(c, cond, if_body),
         Statement::If(cond, if_body, Some(else_body)) => gen_if_else(c, cond, if_body, else_body),
         Statement::While(cond, body)                  => gen_while(c, cond, body),
-        Statement::Auto(_)  => LinkedList::new(),
+        Statement::Auto(_)  => ll!(),
     }
 }
 
 fn gen_fun(c: &mut FunContext, args: Vec<String>, body: Statement) -> LinkedList<String> {
-    let mut instructions = LinkedList::new();
     // Save base pointer, since it's callee-saved
-    instructions.push_back(format!("pushq %rbp"));
-    instructions.push_back(format!("movq %rsp,%rbp"));
+    let mut instructions = ll!(format!("pushq %rbp"),
+                               format!("movq %rsp,%rbp"));
 
     // Prepare initial stack memory
     instructions.append(&mut alloc_args(c, &args));
