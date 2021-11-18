@@ -145,8 +145,10 @@ fn get_tok_symbol(c: &mut ParseContext) -> Option<Token> {
 
 fn get_tok_int(c: &mut ParseContext) -> Option<Token> {
     let current_word = alphanumeric_slice(c.content, c.offset);
-    let str_word = str::from_utf8(current_word)
-        .expect("Invalid UTF8 found in file");
+    // It's ok because we know it's valid UTF-8 already
+    let str_word = unsafe {
+        str::from_utf8_unchecked(current_word)
+    };
 
     match str_word.parse::<i64>() {
         Ok(num) => {
@@ -165,8 +167,9 @@ fn get_tok_word(c: &mut ParseContext) -> Option<Token> {
     let current_word = alphanumeric_slice(c.content, c.offset);
     c.offset += current_word.len();
 
-    let str_word = str::from_utf8(current_word)
-        .expect("Invalid UTF8 found in file");
+    let str_word = unsafe {
+        str::from_utf8_unchecked(current_word)
+    };
 
     let tok = match str_word {
         "return" => Token::Return,
