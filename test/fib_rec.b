@@ -4,5 +4,5 @@ fib(n) {
 }
 
 main() {
-    return(fastfib(10));
+    return(fib(10));
 }

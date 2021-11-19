@@ -7,6 +7,8 @@ pub struct ParseContext<'a> {
     // Offset should only increment once we've parsed a "good" value
     pub offset: usize,
     pub error: Option<String>,
+    // Used for the tokenizer stack
+    pub next_tok: Option<Token>,
 }
 
 impl ParseContext<'_> {
@@ -28,7 +30,7 @@ impl ParseContext<'_> {
 }
 
 fn parse_root_statement(c: &mut ParseContext) -> Option<RootStatement> {
-    match get_tok(c) {
+    match pop_tok(c) {
         // Root statements always begin with an id
         Some(Token::Id(id)) => {
             parse_fun(c, id)
@@ -54,7 +56,7 @@ fn parse_fun(c: &mut ParseContext, name: String) -> Option<RootStatement> {
 
     // Parse args and closing paren
     loop {
-        let tok = get_tok(c);
+        let tok = pop_tok(c);
         if tok.is_none() {
             return None;
         }
@@ -92,8 +94,7 @@ fn parse_fun(c: &mut ParseContext, name: String) -> Option<RootStatement> {
 }
 
 fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
-    let initial_offset = c.offset;
-    let tok = get_tok(c);
+    let tok = pop_tok(c);
     if tok.is_none() {
         return None;
     }
@@ -108,8 +109,8 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
         Token::Semicolon   => Some(Statement::Null),
         Token::Label(name) => Some(Statement::Label(name)),
         Token::Goto        => parse_statement_goto(c),
-        _ => {
-            c.offset = initial_offset;
+        tok => {
+            push_tok(c, tok);
             parse_statement_expr(c)
         },
     }
@@ -121,7 +122,7 @@ fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
     let mut should_parse_param = true;
 
     loop {
-        let tok = get_tok(c);
+        let tok = pop_tok(c);
         if tok.is_none() {
             return None;
         }
@@ -173,15 +174,18 @@ fn parse_statement_if(c: &mut ParseContext) -> Option<Statement> {
         return None;
     }
 
-    let else_body = match peek_tok(c) {
+    let else_body = match pop_tok(c) {
         Some(Token::Else) => {
-            get_tok(c); // Actually consume it
             match parse_statement(c) {
                 Some(body) => Some(Box::new(body)),
                 _          => return None,
             }
         },
-        _ => None,
+        Some(tok) => {
+            push_tok(c, tok);
+            None
+        },
+        None => None,
     };
 
     Some(Statement::If(
@@ -193,7 +197,7 @@ fn parse_statement_if(c: &mut ParseContext) -> Option<Statement> {
 
 // Expect "goto" to have been parsed already
 fn parse_statement_goto(c: &mut ParseContext) -> Option<Statement> {
-    match get_tok(c) {
+    match pop_tok(c) {
         Some(Token::Id(name)) => {
             if !parse_tok(c, Token::Semicolon) {
                 return None;
@@ -239,13 +243,13 @@ fn parse_statement_block(c: &mut ParseContext) -> Option<Statement> {
     let mut statements = Vec::<Statement>::new();
 
     loop {
-        match peek_tok(c) {
+        match pop_tok(c) {
             None => return None,
             Some(Token::RBrace) => {
-                c.offset += 1;
                 break;
             },
-            _ => {
+            Some(tok) => {
+                push_tok(c, tok);
                 let statement = parse_statement(c);
                 if statement.is_none() {
                     return None;
@@ -269,7 +273,7 @@ fn parse_statement_break(c: &mut ParseContext) -> Option<Statement> {
 
 // Expects the `return` keyword to have been parsed already
 fn parse_statement_return(c: &mut ParseContext) -> Option<Statement> {
-    match get_tok(c) {
+    match pop_tok(c) {
         Some(Token::LParen) => {},
         Some(Token::Semicolon) => return Some(Statement::Return),
         _ => {
@@ -309,10 +313,7 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
         return None;
     }
 
-    // Handle operator chaining
-    let initial_offset = c.offset;
-
-    let next_tok = get_tok(c);
+    let next_tok = pop_tok(c);
     if next_tok.is_none() {
         return None;
     }
@@ -345,9 +346,9 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
         Token::Ge    => chain_expr(c, first_expr.unwrap(), Op::Ge),
         Token::Gt    => chain_expr(c, first_expr.unwrap(), Op::Gt),
         Token::Ne    => chain_expr(c, first_expr.unwrap(), Op::Ne),
-        _ => {
+        tok => {
             // The next token isn't a chaining token... Rewind!
-            c.offset = initial_offset;
+            push_tok(c, tok);
             first_expr
         },
     }
@@ -368,16 +369,22 @@ fn chain_expr(c: &mut ParseContext, lhs: Expr, op: Op) -> Option<Expr> {
 }
 
 fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
-    let tok = get_tok(c);
+    let tok = pop_tok(c);
     if tok.is_none() {
         return None;
     }
 
     match tok.unwrap() {
         Token::Id(id) => {
-            match peek_tok(c) {
-                Some(Token::LParen) => parse_expr_call(c, id),
-                _                   => Some(Expr::Id(id))
+            match pop_tok(c) {
+                Some(Token::LParen) => {
+                    parse_expr_call(c, id)
+                },
+                Some(tok) => {
+                    push_tok(c, tok);
+                    Some(Expr::Id(id))
+                },
+                None                => Some(Expr::Id(id)),
             }
         },
         Token::Int(value) => Some(Expr::Int(value)),
@@ -390,17 +397,13 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
 
 // Assumes the rparen has already been parsed
 fn parse_expr_call(c: &mut ParseContext, name: String) -> Option<Expr> {
-    // Skip the rparen, since we safely assume it has been parsed
-    get_tok(c);
-
     let mut params = Vec::<Expr>::new();
     // To alternate between comma & arg parsing
     let mut should_parse_param = true;
 
     // Parse args and closing paren
     loop {
-        let initial_offset = c.offset;
-        let tok = get_tok(c);
+        let tok = pop_tok(c);
         if tok.is_none() {
             return None;
         }
@@ -414,8 +417,8 @@ fn parse_expr_call(c: &mut ParseContext, name: String) -> Option<Expr> {
                 }
                 should_parse_param = true;
             },
-            _ => {
-                c.offset = initial_offset;
+            tok => {
+                push_tok(c, tok);
                 if !should_parse_param {
                     c.error = Some("Comma expected".to_string());
                     return None;
@@ -483,6 +486,7 @@ pub fn parse(content: String) -> Vec<RootStatement> {
         content: content.as_bytes(),
         offset: 0,
         error: None,
+        next_tok: None,
     };
 
     let mut roots = vec!();

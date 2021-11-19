@@ -47,7 +47,7 @@ pub enum Token {
 
 // Returns false if it failed to parse the given token
 pub fn parse_tok(c: &mut ParseContext, expected: Token) -> bool {
-    match get_tok(c) {
+    match pop_tok(c) {
         Some(recieved) => {
             if expected == recieved {
                 true
@@ -63,7 +63,11 @@ pub fn parse_tok(c: &mut ParseContext, expected: Token) -> bool {
 
 // Returns None for invalid tokens
 // Returns Token::Eof for Eof (considered a valid token)
-pub fn get_tok(c: &mut ParseContext) -> Option<Token> {
+pub fn pop_tok(c: &mut ParseContext) -> Option<Token> {
+    if !c.next_tok.is_none() {
+        return std::mem::replace(&mut c.next_tok, None);
+    }
+
     // Seek past useless whitespace
     consume_ws(c);
 
@@ -81,12 +85,13 @@ pub fn get_tok(c: &mut ParseContext) -> Option<Token> {
     }
 }
 
-pub fn peek_tok(c: &mut ParseContext) -> Option<Token> {
-    consume_ws(c); // It's ok to just jump back to right after the whitespace
-    let initial = c.offset;
-    let tok = get_tok(c);
-    c.offset = initial;
-    tok
+pub fn push_tok(c: &mut ParseContext, tok: Token) {
+    if !c.next_tok.is_none() {
+        // This is fine. We shouldn't ever have to push more than one token
+        // If more than one gets pushed, the parser is doing something silly
+        panic!("Token stack is full");
+    }
+    c.next_tok = Some(tok);
 }
 
 // Generates a symbol tokenizer match statemnt for ambiguous multi-char tokens
