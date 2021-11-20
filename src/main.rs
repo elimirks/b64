@@ -16,7 +16,7 @@ use codegen::generate;
 #[derive(Parser)]
 struct Opts {
     /// Input file to compile
-    input: String,
+    inputs: Vec<String>,
     /// Location to write the compiled binary to
     #[clap(short, long, default_value = "a.out")]
     output: String,
@@ -31,18 +31,24 @@ struct Opts {
 fn main() {
     let opts: Opts = Opts::parse();
 
-    let contents = fs::read_to_string(opts.input)
-        .expect("Something went wrong reading the file");
+    let mut root_statements = vec!();
+
+    for input in opts.inputs {
+        let contents = fs::read_to_string(input)
+            .expect("Something went wrong reading the file");
+
+        root_statements.append(&mut parse(contents));
+    }
 
     if opts.no_bin {
         let mut stdout = io::stdout();
-        generate(parse(contents), &mut stdout);
+        generate(root_statements, &mut stdout);
     } else {
         let tmp_file_path = "/tmp/b64.s";
         let mut tmp_file = fs::File::create(tmp_file_path)
             .expect("Couldn't create temp asm file");
 
-        generate(parse(contents), &mut tmp_file);
+        generate(root_statements, &mut tmp_file);
 
         let output_path = if opts.run {
             "/tmp/b64.bin".to_string()
