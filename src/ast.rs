@@ -39,6 +39,8 @@ pub enum Op {
     Ge,
     Lt,
     Gt,
+    ShiftRight,
+    ShiftLeft,
 }
 
 impl Op {

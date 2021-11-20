@@ -139,14 +139,16 @@ fn gen_op_single(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<Strin
  */
 fn gen_op_command(op: &Op, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
     match op {
-        Op::Add => gen_op_single("addq", lhs_loc, rhs_loc),
-        Op::Sub => gen_op_single("subq", lhs_loc, rhs_loc),
-        Op::Eq  => gen_op_cmp("sete", lhs_loc, rhs_loc),
-        Op::Ne  => gen_op_cmp("setne", lhs_loc, rhs_loc),
-        Op::Le  => gen_op_cmp("setle", lhs_loc, rhs_loc),
-        Op::Lt  => gen_op_cmp("setl", lhs_loc, rhs_loc),
-        Op::Ge  => gen_op_cmp("setge", lhs_loc, rhs_loc),
-        Op::Gt  => gen_op_cmp("setg", lhs_loc, rhs_loc),
+        Op::Add        => gen_op_single("addq", lhs_loc, rhs_loc),
+        Op::Sub        => gen_op_single("subq", lhs_loc, rhs_loc),
+        Op::ShiftRight => gen_op_single("shr", lhs_loc, rhs_loc),
+        Op::ShiftLeft  => gen_op_single("shl", lhs_loc, rhs_loc),
+        Op::Eq         => gen_op_cmp("sete", lhs_loc, rhs_loc),
+        Op::Ne         => gen_op_cmp("setne", lhs_loc, rhs_loc),
+        Op::Le         => gen_op_cmp("setle", lhs_loc, rhs_loc),
+        Op::Lt         => gen_op_cmp("setl", lhs_loc, rhs_loc),
+        Op::Ge         => gen_op_cmp("setge", lhs_loc, rhs_loc),
+        Op::Gt         => gen_op_cmp("setg", lhs_loc, rhs_loc),
     }
 }
 

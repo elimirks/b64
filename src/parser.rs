@@ -337,14 +337,16 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
                 },
             }
         },
-        Token::Plus  => chain_expr(c, first_expr.unwrap(), Op::Add),
-        Token::Minus => chain_expr(c, first_expr.unwrap(), Op::Sub),
-        Token::EqEq  => chain_expr(c, first_expr.unwrap(), Op::Eq),
-        Token::Le    => chain_expr(c, first_expr.unwrap(), Op::Le),
-        Token::Lt    => chain_expr(c, first_expr.unwrap(), Op::Lt),
-        Token::Ge    => chain_expr(c, first_expr.unwrap(), Op::Ge),
-        Token::Gt    => chain_expr(c, first_expr.unwrap(), Op::Gt),
-        Token::Ne    => chain_expr(c, first_expr.unwrap(), Op::Ne),
+        Token::Plus       => chain_expr(c, first_expr.unwrap(), Op::Add),
+        Token::Minus      => chain_expr(c, first_expr.unwrap(), Op::Sub),
+        Token::EqEq       => chain_expr(c, first_expr.unwrap(), Op::Eq),
+        Token::Le         => chain_expr(c, first_expr.unwrap(), Op::Le),
+        Token::Lt         => chain_expr(c, first_expr.unwrap(), Op::Lt),
+        Token::Ge         => chain_expr(c, first_expr.unwrap(), Op::Ge),
+        Token::Gt         => chain_expr(c, first_expr.unwrap(), Op::Gt),
+        Token::Ne         => chain_expr(c, first_expr.unwrap(), Op::Ne),
+        Token::ShiftLeft  => chain_expr(c, first_expr.unwrap(), Op::ShiftLeft),
+        Token::ShiftRight => chain_expr(c, first_expr.unwrap(), Op::ShiftRight),
         tok => {
             // The next token isn't a chaining token... Rewind!
             push_tok(c, tok);

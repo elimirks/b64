@@ -1,8 +1,18 @@
+charlen(c) {
+    auto len;
+    len = 0;
+    while (c) {
+        c = c >> 8;
+        len = len + 1;
+    }
+    return(len);
+}
+
+putchar(c) {
+    syscall(1, 1, &c, charlen(c));
+}
+
 main() {
-    /* No vectors yet! Gotta make due with char pointers */
-    auto first, last;
-    first = 'Hello wo';
-    last  = 'rld!*n';
-    syscall(1, 1, &first, 8);
-    syscall(1, 1, &last, 5);
+    putchar('Hello wo');
+    putchar('rld!*n');
 }
