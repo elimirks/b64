@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::collections::LinkedList;
-use std::collections::HashSet;
 use std::io::BufWriter;
 use std::io::Write;
 
@@ -152,6 +151,18 @@ fn gen_op_command(op: &Op, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, L
     }
 }
 
+fn get_safe_registers(used_registers: &Vec<Reg>) -> Vec<Reg> {
+    let mut safe_registers = vec!();
+
+    for reg in USABLE_CALLER_SAVE_REG {
+        if !used_registers.contains(reg) {
+            safe_registers.push(*reg);
+        }
+    }
+
+    safe_registers
+}
+
 /**
  * Plans evaluation strategy for an LHS and RHS expression.
  * It will try to store the LHS value in a register if possible.
@@ -162,11 +173,7 @@ fn gen_op_command(op: &Op, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, L
 fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Loc, Vec<Reg>) {
     // Generate instructions for RHS first so we know which registers are safe
     let (mut rhs_ins, rhs_loc, mut used_registers) = gen_expr(c, rhs);
-    let mut safe_registers: HashSet<&Reg> =
-        USABLE_CALLER_SAVE_REG.into_iter().collect();
-    for reg in &used_registers {
-        safe_registers.remove(&reg.clone());
-    }
+    let safe_registers = get_safe_registers(&used_registers);
 
     let (mut lhs_ins, lhs_loc, mut lhs_registers) = gen_expr(c, lhs);
     used_registers.append(&mut lhs_registers);
@@ -179,13 +186,13 @@ fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Lo
         }
     }
 
-    let new_lhs_loc = match safe_registers.iter().next() {
+    let new_lhs_loc = match safe_registers.first() {
         // If there are safe registers available, store the lhs there
         Some(dest_reg) => {
-            used_registers.push(**dest_reg);
+            used_registers.push(*dest_reg);
             lhs_ins.push_back(format!("movq {},%{}", lhs_loc, dest_reg));
             lhs_ins.append(&mut rhs_ins);
-            Loc::Register(**dest_reg)
+            Loc::Register(*dest_reg)
         },
         // Nowhere is safe! Store LHS on the stack
         None => {
@@ -333,31 +340,115 @@ fn gen_reference(c: &FunContext, name: &String) -> (LinkedList<String>, Loc, Vec
     }
 }
 
-fn gen_expr_ass(c: &FunContext, lhs_name: &String, rhs: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
-    let (mut instructions, mut rhs_loc, mut used_registers) = gen_expr(c, rhs);
+fn gen_dereference(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    let (mut instructions, target_loc, mut used_registers) = gen_expr(c, expr);
 
-    // Because we can't movq from memory to memory
-    if rhs_loc.is_mem() {
-        // Reuse a register if possible
-        let rhs_reg = match used_registers.last() {
-            Some(reg) => *reg,
-            None => {
-                used_registers.push(Reg::Rax);
-                Reg::Rax
-            },
-        };
+    let dest_reg = match used_registers.first() {
+        Some(reg) => *reg,
+        None => {
+            used_registers.push(Reg::Rax);
+            Reg::Rax
+        },
+    };
 
-        instructions.push_back(format!("movq {},%{}", rhs_loc, rhs_reg));
-        rhs_loc = Loc::Register(rhs_reg);
+    instructions.push_back(format!("movq {},%{}", target_loc, dest_reg));
+    instructions.push_back(format!("movq (%{}),%{}", dest_reg, dest_reg));
+
+    (instructions, Loc::Register(dest_reg), used_registers)
+}
+
+// Generates the RHS instructions for an assignment
+fn gen_expr_ass_rhs(
+    c: &FunContext, rhs: &Expr
+) -> (LinkedList<String>, Reg, Vec<Reg>) {
+    let (mut instructions, rhs_loc, mut used_registers) = gen_expr(c, rhs);
+
+    match rhs_loc {
+        Loc::Register(reg) => (instructions, reg, used_registers),
+        // Because we can't movq from memory to memory
+        rhs_loc => {
+            // Reuse a register if possible
+            let rhs_reg = match used_registers.last() {
+                Some(reg) => *reg,
+                None => {
+                    used_registers.push(Reg::Rax);
+                    Reg::Rax
+                },
+            };
+
+            instructions.push_back(format!("movq {},%{}", rhs_loc, rhs_reg));
+            (instructions, rhs_reg, used_registers)
+        },
     }
+}
+
+fn gen_expr_ass(
+    c: &FunContext, lhs_name: &String, rhs: &Expr
+) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    let (mut instructions, rhs_reg, used_registers) =
+        gen_expr_ass_rhs(c, rhs);
 
     match c.variables.get(lhs_name) {
         Some(lhs_loc) => {
-            instructions.push_back(format!("movq {},{}", rhs_loc, lhs_loc));
+            instructions.push_back(format!("movq %{},{}", rhs_reg, lhs_loc));
             (instructions, *lhs_loc, used_registers)
         },
         None => panic!("Variable {} not in scope", lhs_name),
     }
+}
+
+// FIXME: This register assignment technique is super similar in other places
+fn gen_expr_deref_ass(
+    c: &FunContext, lhs: &Expr, rhs: &Expr
+) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    let (mut instructions, lhs_loc, mut used_registers) = gen_expr(c, lhs);
+    let (mut rhs_inst, rhs_reg, mut rhs_used) = gen_expr_ass_rhs(c, rhs);
+    let safe_registers = get_safe_registers(&rhs_used);
+
+    let lhs_dest_reg = match safe_registers.first() {
+        Some(safe_reg) => match lhs_loc {
+            Loc::Register(lhs_reg) if safe_registers.contains(&lhs_reg) =>
+                Some(lhs_reg),
+            lhs_loc => {
+                instructions.push_back(format!(
+                    "movq {},%{}", lhs_loc, safe_reg
+                ));
+                used_registers.push(*safe_reg);
+                Some(*safe_reg)
+            },
+        },
+        None => {
+            // No safe registers! Push to stack!
+            instructions.push_back(format!("pushq {}", lhs_loc));
+            None
+        },
+    };
+
+    instructions.append(&mut rhs_inst);
+    used_registers.append(&mut rhs_used);
+
+    // If needed, pull the LHS address back into a register
+    let dest_reg = match lhs_dest_reg {
+        Some(dest_reg) => dest_reg,
+        // Pull the LHS address off the stack, into an unused register
+        None => {
+            let dest_reg = match rhs_reg {
+                Reg::Rax => Reg::Rcx,
+                _        => Reg::Rax,
+            };
+            instructions.push_back(format!("popq %{}", dest_reg));
+            dest_reg
+        },
+    };
+
+    // At this point
+    // - instructions for both LHS and RHS are done
+    // - The lhs address is at dest_reg
+    // - The rhs value is at rhs_reg
+
+    instructions.push_back(format!("movq %{},(%{})", rhs_reg, dest_reg));
+
+    (instructions, Loc::Register(rhs_reg), used_registers)
 }
 
 fn gen_int(signed: i64) -> (LinkedList<String>, Loc, Vec<Reg>) {
@@ -393,10 +484,12 @@ fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) 
                 None => panic!("Variable {} not in scope", name),
             }
         },
-        Expr::Assignment(lhs_name, rhs) => gen_expr_ass(c, lhs_name, rhs),
+        Expr::Assignment(lhs, rhs)      => gen_expr_ass(c, lhs, rhs),
+        Expr::DerefAssignment(lhs, rhs) => gen_expr_deref_ass(c, lhs, rhs),
         Expr::Operator(op, lhs, rhs)    => gen_op(c, op, lhs, rhs),
         Expr::Call(name, params)        => gen_call(c, name, params),
         Expr::Reference(name)           => gen_reference(c, name),
+        Expr::Dereference(expr)         => gen_dereference(c, expr),
     }
 }
 
@@ -579,7 +672,7 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
     let mut w = BufWriter::new(writer);
 
     // Call main, use the return value as the exit status
-    writeln!(w, include_str!("../assets/stdlib.s"))
+    writeln!(w, include_str!("../assets/preamble.s"))
         .expect("Failed writing to output");
 
     let mut c = FunContext {

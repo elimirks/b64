@@ -25,8 +25,10 @@ pub enum Expr {
     Call(String, Vec<Expr>),
     Int(i64),
     Assignment(String, Box<Expr>),
+    DerefAssignment(Box<Expr>, Box<Expr>),
     Operator(Op, Box<Expr>, Box<Expr>),
     Reference(String),
+    Dereference(Box<Expr>),
 }
 
 #[derive(Debug)]

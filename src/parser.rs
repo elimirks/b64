@@ -318,24 +318,24 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
     }
 
     match next_tok.unwrap() {
-        Token::Eq => {
-            match first_expr.unwrap() {
-                Expr::Id(lhs) => {
-                    let rhs = parse_expr(c);
-                    if rhs.is_none() {
-                        None
-                    } else {
-                        Some(Expr::Assignment(
-                            lhs,
-                            Box::new(rhs.unwrap())
-                        ))
-                    }
-                },
-                _ => {
-                    c.error = Some("lhs of assignment must be an ID".to_string());
-                    None
-                },
-            }
+        Token::Eq => match first_expr.unwrap() {
+            Expr::Id(lhs) => match parse_expr(c) {
+                Some(rhs) => Some(Expr::Assignment(
+                        lhs,
+                        Box::new(rhs)
+                )),
+                None => None,
+            },
+            Expr::Dereference(lhs) => match parse_expr(c) {
+                Some(rhs) => Some(Expr::DerefAssignment(lhs, Box::new(rhs))),
+                None      => None,
+            },
+            _ => {
+                c.error = Some(
+                    "lhs of assignment must be an ID or dereference".to_string()
+                );
+                None
+            },
         },
         Token::Plus       => chain_expr(c, first_expr.unwrap(), Op::Add),
         Token::Minus      => chain_expr(c, first_expr.unwrap(), Op::Sub),
@@ -376,17 +376,15 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
     }
 
     match tok.unwrap() {
-        Token::Id(id) => {
-            match pop_tok(c) {
-                Some(Token::LParen) => {
-                    parse_expr_call(c, id)
-                },
-                Some(tok) => {
-                    push_tok(c, tok);
-                    Some(Expr::Id(id))
-                },
-                None                => Some(Expr::Id(id)),
-            }
+        Token::Id(id) => match pop_tok(c) {
+            Some(Token::LParen) => {
+                parse_expr_call(c, id)
+            },
+            Some(tok) => {
+                push_tok(c, tok);
+                Some(Expr::Id(id))
+            },
+            None                => Some(Expr::Id(id)),
         },
         Token::Value(value) => Some(Expr::Int(value)),
         Token::Ampersand => match pop_tok(c) {
@@ -397,17 +395,20 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
             },
             None => None,
         },
-        Token::LParen => {
-            match parse_expr(c) {
-                Some(expr) => {
-                    if parse_tok(c, Token::RParen) {
-                        Some(expr)
-                    } else {
-                        None
-                    }
-                },
-                None => None,
-            }
+        Token::Asterisk => match parse_expr_unchained(c) {
+            Some(expr) => Some(Expr::Dereference(Box::new(expr))),
+            None       => None
+        },
+        // Allow parens for disambiguation
+        Token::LParen => match parse_expr(c) {
+            Some(expr) => {
+                if parse_tok(c, Token::RParen) {
+                    Some(expr)
+                } else {
+                    None
+                }
+            },
+            None => None,
         },
         other => {
             c.error = Some(format!("Expected expression. {:?} found", other));

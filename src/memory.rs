@@ -90,6 +90,7 @@ impl Loc {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_mem(&self) -> bool {
         match self {
             Loc::Stack(_) => true,
