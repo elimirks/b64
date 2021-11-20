@@ -358,14 +358,33 @@ fn gen_expr_ass(c: &FunContext, lhs_name: &String, rhs: &Expr) -> (LinkedList<St
     }
 }
 
+fn gen_int(signed: i64) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    if signed < i32::MAX as i64 && signed >= i32::MIN as i64 {
+        (ll!(), Loc::Immediate(signed), vec!())
+    } else {
+        let unsigned = signed as u64;
+        let dest_reg = Reg::Rax;
+
+        let upper = (unsigned & !((1 << 32) - 1)) >> 32;
+        let lower = unsigned & ((1 << 32) - 1);
+
+        // Since immediates can only be 32 bit ints at most
+        let instructions = ll!(
+            format!("movq ${},%{}", upper, dest_reg),
+            format!("shlq $32,%{}", dest_reg),
+            format!("addq ${},%{}", lower, dest_reg)
+        );
+
+        (instructions, Loc::Register(dest_reg), vec!(dest_reg))
+    }
+}
+
 /**
  * @return (instructions, location, used_registers)
  */
 fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
     match expr {
-        Expr::Int(value) => {
-            (ll!(), Loc::Immediate(*value), vec!())
-        },
+        Expr::Int(value) => gen_int(*value),
         Expr::Id(name) => {
             match c.variables.get(name) {
                 Some(location) => (ll!(), *location, vec!()),

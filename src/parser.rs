@@ -1,9 +1,8 @@
-use std::str;
 use crate::ast::*;
 use crate::tokenizer::*;
 
-pub struct ParseContext<'a> {
-    pub content: &'a [u8],
+pub struct ParseContext {
+    pub content: Vec<char>,
     // Offset should only increment once we've parsed a "good" value
     pub offset: usize,
     pub error: Option<String>,
@@ -11,7 +10,7 @@ pub struct ParseContext<'a> {
     pub next_tok: Option<Token>,
 }
 
-impl ParseContext<'_> {
+impl ParseContext {
     pub fn peek_char(&self) -> Option<char> {
         if self.offset < self.content.len() {
             Some(self.content[self.offset] as char)
@@ -387,7 +386,7 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
                 None                => Some(Expr::Id(id)),
             }
         },
-        Token::Int(value) => Some(Expr::Int(value)),
+        Token::Value(value) => Some(Expr::Int(value)),
         Token::Ampersand => match pop_tok(c) {
             Some(Token::Id(id)) => Some(Expr::Reference(id)),
             Some(tok) => {
@@ -480,11 +479,11 @@ fn get_parse_position(c: &ParseContext) -> (String, usize, usize) {
         row_end += 1;
     }
 
-    let line = str::from_utf8(&c.content[current_row_offset..row_end])
-        .unwrap()
-        .to_string();
+    let line: &String = &c.content[current_row_offset..row_end]
+        .into_iter()
+        .collect();
 
-    (line, row, col)
+    (line.to_string(), row, col)
 }
 
 fn print_error(c: &mut ParseContext) {
@@ -503,7 +502,7 @@ fn print_error(c: &mut ParseContext) {
 
 pub fn parse(content: String) -> Vec<RootStatement> {
     let mut c = ParseContext {
-        content: content.as_bytes(),
+        content: content.chars().collect(),
         offset: 0,
         error: None,
         next_tok: None,

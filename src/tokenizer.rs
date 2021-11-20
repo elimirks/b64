@@ -1,11 +1,10 @@
-use std::str;
 use crate::parser::ParseContext;
 
 #[derive(Debug, PartialEq)]
 pub enum Token {
     Id(String),
     Label(String),
-    Int(i64),
+    Value(i64),
     Return,
     Auto,
     Extern,
@@ -77,6 +76,8 @@ pub fn pop_tok(c: &mut ParseContext) -> Option<Token> {
                 get_tok_word(c)
             } else if ch.is_numeric() {
                 get_tok_int(c)
+            } else if ch == '\'' {
+                get_tok_char(c)
             } else {
                 get_tok_symbol(c)
             }
@@ -149,16 +150,13 @@ fn get_tok_symbol(c: &mut ParseContext) -> Option<Token> {
 }
 
 fn get_tok_int(c: &mut ParseContext) -> Option<Token> {
-    let current_word = alphanumeric_slice(c.content, c.offset);
-    // It's ok because we know it's valid UTF-8 already
-    let str_word = unsafe {
-        str::from_utf8_unchecked(current_word)
-    };
+    let current_word = alphanumeric_slice(&c.content, c.offset);
+    let str_word: String = current_word.into_iter().collect();
 
     match str_word.parse::<i64>() {
         Ok(num) => {
             c.offset += current_word.len();
-            Some(Token::Int(num))
+            Some(Token::Value(num))
         },
         _ => {
             c.error = Some(format!("Invalid int literal: {}", str_word));
@@ -167,16 +165,48 @@ fn get_tok_int(c: &mut ParseContext) -> Option<Token> {
     }
 }
 
+/**
+ * Expects opening quote character to have been peeked at already
+ * @param terminal The surrounding char
+ */
+fn get_tok_char(c: &mut ParseContext) -> Option<Token> {
+    let mut end = c.offset + 1;
+
+    // TODO: Allow escape chars
+    while end < c.content.len() && c.content[end] != '\'' {
+        end += 1;
+    }
+
+    if end - c.offset >= 10 {
+        c.error = Some("A char can be at most 8 ASCII characters".to_string());
+        return None;
+    }
+
+    let mut value: i64 = 0;
+
+    for (i, chr) in c.content[c.offset + 1..end].iter().enumerate() {
+        let ic = *chr as i64;
+
+        if ic >= 256 {
+            c.error = Some("b64 only supports ASCII chars".to_string());
+            return None;
+        }
+
+        // By the power little endian "this just works (tm)"
+        value += ic << (i * 8);
+    }
+
+    c.offset = end + 1;
+    Some(Token::Value(value as i64))
+}
+
 // Parsed word-like tokens. Includes keywords and IDs
 fn get_tok_word(c: &mut ParseContext) -> Option<Token> {
-    let current_word = alphanumeric_slice(c.content, c.offset);
+    let current_word = alphanumeric_slice(&c.content, c.offset);
     c.offset += current_word.len();
+    let str_word: String = current_word.into_iter().collect();
 
-    let str_word = unsafe {
-        str::from_utf8_unchecked(current_word)
-    };
-
-    let tok = match str_word {
+    let tok = match str_word.as_str() {
         "return" => Token::Return,
         "auto"   => Token::Auto,
         "extern" => Token::Extern,
@@ -208,10 +238,10 @@ fn get_tok_word(c: &mut ParseContext) -> Option<Token> {
  * @return An empty slice if the offset is out of bounds,
  *         or if there are no alphanumeric characters at that position
  */
-fn alphanumeric_slice(slice: &[u8], offset: usize) -> &[u8] {
+fn alphanumeric_slice(slice: &[char], offset: usize) -> &[char] {
     let mut len = 0;
     while offset + len < slice.len() {
-        if (slice[offset + len] as char).is_alphanumeric() {
+        if slice[offset + len].is_alphanumeric() {
             len += 1;
         } else {
             break;
