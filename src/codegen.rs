@@ -98,7 +98,7 @@ fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
     let mut instructions = ll!();
     for i in 0..args.len() {
         if i < 6 {
-            let register = register_for_arg_num(i);
+            let register = Reg::for_arg_num(i);
             instructions.push_back(format!("pushq %{}", register));
             c.variables.insert(
                 args[i].clone(),
@@ -112,20 +112,6 @@ fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
         }
     }
     instructions
-}
-
-fn register_for_arg_num(num: usize) -> Reg {
-    match num {
-        0 => Reg::Rdi,
-        1 => Reg::Rsi,
-        2 => Reg::Rdx,
-        3 => Reg::Rcx,
-        4 => Reg::R8,
-        5 => Reg::R9,
-        _ => {
-            panic!("arg num {} is not stored in a register", num)
-        }
-    }
 }
 
 fn gen_op_cmp(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
@@ -242,7 +228,42 @@ fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String
     (instructions, op_loc, used_registers)
 }
 
+fn gen_syscall(c: &FunContext, params: &Vec<Expr>) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    if params.len() == 0 || params.len() > 7 {
+        panic!("syscall() must take between 1-7 arguments");
+    }
+
+    let mut instructions = ll!();
+    let mut used_registers = vec!();
+
+    for param in params.iter().rev() {
+        let (mut param_inst, param_loc, mut param_used_reg) =
+            gen_expr(c, &param);
+
+        instructions.append(&mut param_inst);
+
+        // TODO: Optimize better, quit monkeying around
+        // No point pushing memory or immediate locations to the stack!
+        instructions.push_back(format!("pushq {}", param_loc));
+
+        used_registers.append(&mut param_used_reg);
+    }
+
+    for i in 0..params.len() {
+        let reg = Reg::for_syscall_arg_num(i);
+        instructions.push_back(format!("popq %{}", reg));
+    }
+
+    instructions.push_back(format!("syscall"));
+
+    (instructions, Loc::Register(Reg::Rax), used_registers)
+}
+
 fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    if name == "syscall" {
+        return gen_syscall(c, params);
+    }
+
     let mut instructions = ll!();
 
     // Evaluate backwards until the 7th var.
@@ -269,7 +290,7 @@ fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<St
     }
 
     for i in (0..std::cmp::min(6, params.len())).rev() {
-        let reg = register_for_arg_num(i);
+        let reg = Reg::for_arg_num(i);
         let param_loc = param_locs[i];
 
         if param_loc.is_reg() {
@@ -289,6 +310,25 @@ fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<St
     // Assume we used all the registers, since we're calling an unknown function
     let used_vars: Vec<Reg> = USABLE_CALLER_SAVE_REG.to_vec();
     (instructions, Loc::Register(Reg::Rax), used_vars)
+}
+
+fn gen_reference(c: &FunContext, name: &String) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    match c.variables.get(name) {
+        Some(Loc::Stack(offset)) => {
+            let dest_reg = Reg::Rax;
+            let mut instructions = ll!(format!("movq %rbp,%{}", dest_reg));
+
+            if *offset < 0 {
+                instructions.push_back(format!("subq ${},%{}", 8 * -offset, dest_reg));
+            } else if *offset > 0 {
+                instructions.push_back(format!("addq ${},%{}", 8 * offset, dest_reg));
+            }
+
+            (instructions, Loc::Register(dest_reg), vec!(dest_reg))
+        },
+        Some(other) => panic!("Variable cannot be at {}!", other),
+        None => panic!("{} not in scope", name),
+    }
 }
 
 fn gen_expr_ass(c: &FunContext, lhs_name: &String, rhs: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
@@ -335,6 +375,7 @@ fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) 
         Expr::Assignment(lhs_name, rhs) => gen_expr_ass(c, lhs_name, rhs),
         Expr::Operator(op, lhs, rhs)    => gen_op(c, op, lhs, rhs),
         Expr::Call(name, params)        => gen_call(c, name, params),
+        Expr::Reference(name)           => gen_reference(c, name),
     }
 }
 

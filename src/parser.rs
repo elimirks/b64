@@ -388,6 +388,26 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
             }
         },
         Token::Int(value) => Some(Expr::Int(value)),
+        Token::Ampersand => match pop_tok(c) {
+            Some(Token::Id(id)) => Some(Expr::Reference(id)),
+            Some(tok) => {
+                c.error = Some(format!("Expected id, found {:?}", tok));
+                None
+            },
+            None => None,
+        },
+        Token::LParen => {
+            match parse_expr(c) {
+                Some(expr) => {
+                    if parse_tok(c, Token::RParen) {
+                        Some(expr)
+                    } else {
+                        None
+                    }
+                },
+                None => None,
+            }
+        },
         other => {
             c.error = Some(format!("Expected expression. {:?} found", other));
             None

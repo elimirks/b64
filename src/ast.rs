@@ -26,6 +26,7 @@ pub enum Expr {
     Int(i64),
     Assignment(String, Box<Expr>),
     Operator(Op, Box<Expr>, Box<Expr>),
+    Reference(String),
 }
 
 #[derive(Debug)]

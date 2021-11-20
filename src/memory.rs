@@ -30,6 +30,36 @@ impl Reg {
             Reg::R15 => "r15b",
         }
     }
+
+    pub fn for_arg_num(num: usize) -> Reg {
+        match num {
+            0 => Reg::Rdi,
+            1 => Reg::Rsi,
+            2 => Reg::Rdx,
+            3 => Reg::Rcx,
+            4 => Reg::R8,
+            5 => Reg::R9,
+            _ => {
+                panic!("arg num {} is not stored in a register", num)
+            }
+        }
+    }
+
+    pub fn for_syscall_arg_num(num: usize) -> Reg {
+        match num {
+            0 => Reg::Rax, // Syscall number
+            // The rest are considered arguments
+            1 => Reg::Rdi,
+            2 => Reg::Rsi,
+            3 => Reg::Rdx,
+            4 => Reg::R10,
+            5 => Reg::R8,
+            6 => Reg::R9,
+            _ => {
+                panic!("arg num {} is not stored in a register", num)
+            }
+        }
+    }
 }
 
 // Caller save registers, except for %rsp
