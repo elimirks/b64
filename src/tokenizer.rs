@@ -166,38 +166,63 @@ fn get_tok_int(c: &mut ParseContext) -> Option<Token> {
 }
 
 /**
+ * Tokenizes a char literal into a value
  * Expects opening quote character to have been peeked at already
- * @param terminal The surrounding char
  */
 fn get_tok_char(c: &mut ParseContext) -> Option<Token> {
-    let mut end = c.offset + 1;
-
-    // TODO: Allow escape chars
-    while end < c.content.len() && c.content[end] != '\'' {
-        end += 1;
-    }
-
-    if end - c.offset >= 10 {
-        c.error = Some("A char can be at most 8 ASCII characters".to_string());
-        return None;
-    }
-
+    // Start at the character right after the starting quote
+    let mut i = c.offset + 1;
+    // Index of the char literal, NOT of the content
+    let mut index = 0;
     let mut value: i64 = 0;
 
-    for (i, chr) in c.content[c.offset + 1..end].iter().enumerate() {
-        let ic = *chr as i64;
+    while i < c.content.len() && c.content[i] != '\'' {
+        let ichar = match c.content[i] {
+            '*' => {
+                i += 1;
+                // Hit EOF while parsing char
+                if i >= c.content.len() {
+                    break;
+                }
 
-        if ic >= 256 {
-            c.error = Some("b64 only supports ASCII chars".to_string());
-            return None;
-        }
+                match c.content[i] {
+                    '*'  => '*' as i64,
+                    'n'  => '\n' as i64,
+                    '0'  => 0,
+                    't'  => '\t' as i64,
+                    '\'' => '\'' as i64,
+                    '\"' => '\"' as i64,
+                    other => {
+                        c.error = Some(format!("Unknown escape char: {}", other));
+                        return None;
+                    },
+                }
+            },
+            chr => {
+                let ichar = chr as i64;
 
-        // By the power little endian "this just works (tm)"
-        value += ic << (i * 8);
+                if ichar >= 256 || ichar < 0 {
+                    c.error = Some("b64 only supports ASCII chars".to_string());
+                    return None;
+                }
+
+                ichar
+            },
+        };
+
+        value += ichar << (index * 8);
+
+        index += 1;
+        i += 1;
     }
 
-    c.offset = end + 1;
-    Some(Token::Value(value as i64))
+    if i >= c.content.len() {
+        c.error = Some("Hit EOF while parsing char".to_string());
+        None
+    } else {
+        c.offset = i + 1;
+        Some(Token::Value(value))
+    }
 }
 
 // Parsed word-like tokens. Includes keywords and IDs

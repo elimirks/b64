@@ -518,7 +518,6 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
                 Some(label) => ll!(format!("jmp {}", label)),
                 None => panic!("Cannot break from this location"),
             }
-            // FIXME: Pop from stack
         },
         Statement::Goto(name) => {
             match c.labels.get(name) {
