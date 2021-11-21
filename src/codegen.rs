@@ -59,15 +59,22 @@ fn prepass_gen(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<
             },
             Statement::Auto(vars) => {
                 for var in vars {
-                    if c.variables.contains_key(var) {
-                        panic!("{} already defined in this function", var);
+                    let name = var.name();
+
+                    if c.variables.contains_key(name) {
+                        panic!("{} already defined in this function", name);
                     }
 
+                    let size = match var {
+                        Auto::Vec(_, vec_size) => 1 + vec_size,
+                        Auto::Val(_)           => 1,
+                    };
+
                     c.variables.insert(
-                        var.clone(),
+                        name.clone(),
                         Loc::Stack(-offset - autos_size)
                     );
-                    autos_size += 1;
+                    autos_size += size;
                 }
             },
             Statement::Block(statements) => {
@@ -113,7 +120,9 @@ fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
     instructions
 }
 
-fn gen_op_cmp(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
+fn gen_op_cmp(
+    command: &str, lhs_loc: Loc, rhs_loc: Loc
+) -> (LinkedList<String>, Loc, Vec<Reg>) {
     let mut instructions = ll!(format!("cmpq {},{}", rhs_loc, lhs_loc),
                                format!("movq $0,{}", lhs_loc));
 
@@ -123,23 +132,89 @@ fn gen_op_cmp(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>,
         panic!("LHS must be a register");
     }
 
-    (instructions, lhs_loc)
+    (instructions, lhs_loc, vec!())
 }
 
-fn gen_op_single(command: &str, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
-    (ll!(format!("{} {},{}", command, rhs_loc, lhs_loc)), lhs_loc)
+fn gen_op_single(
+    command: &str, lhs_loc: Loc, rhs_loc: Loc
+) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    (ll!(format!("{} {},{}", command, rhs_loc, lhs_loc)), lhs_loc, vec!())
+}
+
+/**
+ * Generate instructions to diving (or mod) two numbers
+ * As per x86 idivq, the results always go to rax and rdx
+ */
+fn gen_op_pre_div(
+    lhs_loc: Loc, init_rhs_loc: Loc
+) -> (LinkedList<String>, Vec<Reg>) {
+    let mut instructions = ll!();
+    // rax and rdx are always used for div or mod
+    let mut used_registers = vec!(Reg::Rax, Reg::Rdx);
+
+    let should_move_rhs = match init_rhs_loc {
+        Loc::Register(Reg::Rax) => true,
+        Loc::Register(Reg::Rdx) => true,
+        Loc::Immediate(_)       => true,
+        _                       => false,
+    };
+
+    // Move rhs to a new register if necessary
+    let rhs_loc = if should_move_rhs {
+        // Make sure we don't override LHS
+        let dest_reg = match lhs_loc {
+            Loc::Register(Reg::Rcx) => Reg::Rdi,
+            _                       => Reg::Rcx,
+        };
+
+        used_registers.push(dest_reg);
+        instructions.push_back(format!(
+            "movq {},%{}", init_rhs_loc, dest_reg
+        ));
+
+        Loc::Register(dest_reg)
+    } else {
+        init_rhs_loc
+    };
+
+    match lhs_loc {
+        Loc::Register(Reg::Rax) => {},
+        lhs_loc => instructions.push_back(format!("movq {},%rax", lhs_loc)),
+    }
+    instructions.push_back("movq $0,%rdx".to_string());
+    instructions.push_back(format!("idivq {}", rhs_loc));
+
+    (instructions, used_registers)
+}
+
+fn gen_op_mod(
+    lhs_loc: Loc, rhs_loc: Loc
+) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    let (instructions, used_registers) = gen_op_pre_div(lhs_loc, rhs_loc);
+    (instructions, Loc::Register(Reg::Rdx), used_registers)
+}
+
+fn gen_op_div(
+    lhs_loc: Loc, rhs_loc: Loc
+) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    let (instructions, used_registers) = gen_op_pre_div(lhs_loc, rhs_loc);
+    (instructions, Loc::Register(Reg::Rax), used_registers)
 }
 
 /**
  * Generates instructions for applying the operator to the given lhs & rhs.
  * May override either lhs_loc or rhs_loc if they are registers.
  * ASSUMES lhs_loc is already in a register
- * @return (instructions, dest_loc, extra_reg)
+ * @return (instructions, dest_loc, extra_registers)
  */
-fn gen_op_command(op: &Op, lhs_loc: Loc, rhs_loc: Loc) -> (LinkedList<String>, Loc) {
+fn gen_op_command(
+    op: &Op, lhs_loc: Loc, rhs_loc: Loc
+) -> (LinkedList<String>, Loc, Vec<Reg>) {
     match op {
         Op::Add        => gen_op_single("addq", lhs_loc, rhs_loc),
         Op::Sub        => gen_op_single("subq", lhs_loc, rhs_loc),
+        Op::Mod        => gen_op_mod(lhs_loc, rhs_loc),
+        Op::Div        => gen_op_div(lhs_loc, rhs_loc),
         Op::ShiftRight => gen_op_single("shr", lhs_loc, rhs_loc),
         Op::ShiftLeft  => gen_op_single("shl", lhs_loc, rhs_loc),
         Op::Eq         => gen_op_cmp("sete", lhs_loc, rhs_loc),
@@ -226,13 +301,18 @@ fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Lo
     (lhs_ins, new_lhs_loc, rhs_loc, used_registers)
 }
 
-fn gen_op(c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
-    let (mut instructions, lhs_loc, rhs_loc, used_registers) =
+fn gen_op(
+    c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr
+) -> (LinkedList<String>, Loc, Vec<Reg>) {
+    let (mut instructions, lhs_loc, rhs_loc, mut used_registers) =
         gen_pre_op(c, lhs, rhs);
 
     // Run the command!
-    let (mut op_ins, op_loc) = gen_op_command(op, lhs_loc, rhs_loc);
+    let (mut op_ins, op_loc, mut op_registers) =
+        gen_op_command(op, lhs_loc, rhs_loc);
+
     instructions.append(&mut op_ins);
+    used_registers.append(&mut op_registers);
 
     (instructions, op_loc, used_registers)
 }
@@ -604,6 +684,24 @@ fn gen_if_else(
     instructions
 }
 
+fn gen_auto(c: &mut FunContext, vars: &Vec<Auto>) -> LinkedList<String> {
+    let mut instructions = ll!();
+    for var in vars {
+        if let Auto::Vec(name, size) = var {
+            // The first value in the stack for a vector is a data pointer
+            match c.variables.get(name) {
+                Some(loc @ Loc::Stack(_)) => {
+                    instructions.push_back(format!("movq %rbp,{}", loc));
+                    instructions.push_back(format!("addq ${},{}", size * 8, loc));
+                },
+                // Due to pre-pass, we should always expecte it there
+                _ => panic!("Couldn't find variable on the stack"),
+            }
+        }
+    }
+    instructions
+}
+
 // Returns true if the last statement is a return
 fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
     match body {
@@ -632,14 +730,12 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
             }
             instructions
         },
-        Statement::Expr(expr) => {
-            let (instructions, _, _) = gen_expr(c, expr);
-            instructions
-        },
-        Statement::If(cond, if_body, None)            => gen_if(c, cond, if_body),
-        Statement::If(cond, if_body, Some(else_body)) => gen_if_else(c, cond, if_body, else_body),
-        Statement::While(cond, body)                  => gen_while(c, cond, body),
-        Statement::Auto(_)  => ll!(),
+        Statement::Auto(vars)              => gen_auto(c, vars),
+        Statement::Expr(expr)              => gen_expr(c, expr).0,
+        Statement::If(cond, if_body, None) => gen_if(c, cond, if_body),
+        Statement::While(cond, body)       => gen_while(c, cond, body),
+        Statement::If(cond, if_body, Some(else_body)) =>
+            gen_if_else(c, cond, if_body, else_body),
     }
 }
 

@@ -13,10 +13,25 @@ pub enum Statement {
     Null, // "no op" essentially
     Label(String),
     Goto(String),
-    Auto(Vec<String>),
+    Auto(Vec<Auto>),
     Block(Vec<Statement>),
     If(Expr, Box<Statement>, Option<Box<Statement>>),
     While(Expr, Box<Statement>),
+}
+
+#[derive(Debug)]
+pub enum Auto {
+    Vec(String, i64),
+    Val(String),
+}
+
+impl Auto {
+    pub fn name(&self) -> &String {
+        match self {
+            Auto::Vec(name, _) => name,
+            Auto::Val(name)    => name,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -35,6 +50,8 @@ pub enum Expr {
 pub enum Op {
     Add,
     Sub,
+    Div,
+    Mod,
     Eq,
     Ne,
     Le,

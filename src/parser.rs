@@ -5,6 +5,9 @@ pub struct ParseContext {
     pub content: Vec<char>,
     // Offset should only increment once we've parsed a "good" value
     pub offset: usize,
+    // Store parse errors here.
+    // By convention, return None whenever there is a parse error
+    // And you must always set a message!
     pub error: Option<String>,
     // Used for the tokenizer stack
     pub next_tok: Option<Token>,
@@ -115,9 +118,37 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
     }
 }
 
+fn parse_auto_entry(c: &mut ParseContext, name: String) -> Option<Auto> {
+    match pop_tok(c) {
+        Some(Token::LBracket) => {
+            match pop_tok(c) {
+                Some(Token::Value(value)) if value >= 1 => {
+                    if parse_tok(c, Token::RBracket) {
+                        Some(Auto::Vec(name, value))
+                    } else {
+                        None
+                    }
+                },
+                Some(other) => {
+                    c.error = Some(format!(
+                        "Expected positive int. Found {:?}", other
+                    ));
+                    None
+                },
+                None => None,
+            }
+        },
+        Some(tok) => {
+            push_tok(c, tok);
+            Some(Auto::Val(name))
+        },
+        None => None,
+    }
+}
+
 // Expects opening `auto` to have been parsed
 fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
-    let mut ids = Vec::<String>::new();
+    let mut ids = Vec::<Auto>::new();
     let mut should_parse_param = true;
 
     loop {
@@ -133,8 +164,14 @@ fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
                     c.error = Some("Comma expected, id found".to_string());
                     return None;
                 }
-                ids.push(id);
-                should_parse_param = false;
+
+                match parse_auto_entry(c, id) {
+                    Some(entry) => {
+                        ids.push(entry);
+                        should_parse_param = false;
+                    },
+                    None => return None,
+                }
             },
             Token::Comma => {
                 if should_parse_param {
@@ -347,6 +384,8 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
         Token::Ne         => chain_expr(c, first_expr.unwrap(), Op::Ne),
         Token::ShiftLeft  => chain_expr(c, first_expr.unwrap(), Op::ShiftLeft),
         Token::ShiftRight => chain_expr(c, first_expr.unwrap(), Op::ShiftRight),
+        Token::Percent    => chain_expr(c, first_expr.unwrap(), Op::Mod),
+        Token::Slash      => chain_expr(c, first_expr.unwrap(), Op::Div),
         tok => {
             // The next token isn't a chaining token... Rewind!
             push_tok(c, tok);
