@@ -13,8 +13,8 @@ enum ScopeEntry {
     Var(Loc),
 }
 
-struct FunContext {
-    global_scope: HashMap<String, ScopeEntry>,
+struct FunContext<'a> {
+    global_scope: &'a HashMap<String, ScopeEntry>,
     /*
      * One HashMap for the entire function scope, for O(1) access
      * I thought about using a linked list of hashmaps...
@@ -33,7 +33,7 @@ struct FunContext {
     break_dest_stack: Vec<String>,
 }
 
-impl FunContext {
+impl FunContext<'_> {
     fn new_label(&mut self, prefix: &str) -> String {
         self.label_counter += 1;
         // By prefixing with '.', it guarantees no collisions with user labels
@@ -893,45 +893,69 @@ fn root_prepass(
     (scope, root_vars)
 }
 
-pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
-    let mut w = BufWriter::new(writer);
-
-    let (global_scope, root_vars) = root_prepass(&statements);
-
-    // Generate data segment
+fn generate_data_segment(root_vars: &Vec<&Var>, w: &mut dyn Write) {
     writeln!(w, ".data")
         .expect("Failed writing to output");
     for var in root_vars {
         let size = match var {
             Var::Single(_)    => 1,
-            Var::Vec(_, size) => *size,
+            Var::Vec(_, size) => 1 + size, // +1 for the vec pointer
         };
         let name = var.name();
 
-        writeln!(w, "{}:\n    .zero {}", name, size * 8)
+        writeln!(w, "{}:\n    .skip {}", name, size * 8)
             .expect("Failed writing to output");
     }
+}
 
-    // Call main, use the return value as the exit status
-    writeln!(w, include_str!("../assets/preamble.s"))
+fn generate_entry(root_vars: &Vec<&Var>, w: &mut dyn Write) {
+    let mut start_instructions = vec!();
+
+    // Initialize vec pointers
+    // For consistency with stack vectors, data vectors are pointers
+    for var in root_vars {
+        if let Var::Vec(name, _) = var {
+            start_instructions.push(format!("leaq {}(%rip),%rax", name));
+            start_instructions.push(format!("addq $8,%rax"));
+            start_instructions.push(format!("movq %rax,{}(%rip)", name));
+        }
+    }
+
+    start_instructions.push("call main".to_string());
+    start_instructions.push("movq %rax,%rdi".to_string());
+    start_instructions.push("movq $60,%rax".to_string());
+    start_instructions.push("syscall".to_string());
+
+    writeln!(w, "{}\n{}\n{}", ".text", ".global _start", "_start:")
         .expect("Failed writing to output");
+    for instruction in start_instructions {
+        writeln!(w, "    {}", instruction)
+            .expect("Failed writing to output");
+    }
+}
 
-    let mut c = FunContext {
-        global_scope: global_scope,
-        fun_scope: HashMap::new(),
-        block_vars: vec!(),
-        local_var_locs: HashMap::new(),
-        labels: HashMap::new(),
-        label_counter: 0,
-        break_dest_stack: vec!(),
-    };
+pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
+    let mut w = BufWriter::new(writer);
+
+    let (global_scope, root_vars) = root_prepass(&statements);
+
+    generate_data_segment(&root_vars, &mut w);
+    generate_entry(&root_vars, &mut w);
+
+    let mut label_counter = 0;
 
     for statement in statements {
         match statement {
             RootStatement::Function(name, args, body) => {
-                // FIXME: I kinda hate this
-                c.local_var_locs.clear();
-                c.labels.clear();
+                let mut c = FunContext {
+                    global_scope: &global_scope,
+                    fun_scope: HashMap::new(),
+                    block_vars: vec!(),
+                    local_var_locs: HashMap::new(),
+                    labels: HashMap::new(),
+                    label_counter: label_counter,
+                    break_dest_stack: vec!(),
+                };
 
                 let instructions = gen_fun(&mut c, args, body);
                 writeln!(w, "{}:", name)
@@ -940,6 +964,8 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
                     writeln!(w, "    {}", instruction)
                         .expect("Failed writing to output");
                 }
+
+                label_counter = c.label_counter;
             },
             // Vars are generated in the prepass
             RootStatement::Variable(_) => {},

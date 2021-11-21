@@ -31,6 +31,40 @@ impl ParseContext {
     }
 }
 
+fn parse_global_var(c: &mut ParseContext, id: String) -> Option<RootStatement> {
+    match pop_tok(c) {
+        Some(Token::LBracket) => {
+            match pop_tok(c) {
+                Some(Token::Value(size)) if size > 0 => {
+                    if !parse_tok(c, Token::RBracket) {
+                        None
+                    } else if !parse_tok(c, Token::Semicolon) {
+                        None
+                    } else {
+                        Some(RootStatement::Variable(Var::Vec(id, size)))
+                    }
+                },
+                Some(other) => {
+                    c.error = Some(format!(
+                        "Expected positive int. {:?} given", other));
+                    None
+                },
+                None => None,
+            }
+        },
+        Some(Token::Semicolon) => {
+            Some(RootStatement::Variable(Var::Single(id)))
+        },
+        Some(other) => {
+            c.error = Some(format!(
+                "Expected [, (, or ;. Found {:?}", other
+            ));
+            None
+        },
+        None => None,
+    }
+}
+
 fn parse_root_statement(c: &mut ParseContext) -> Option<RootStatement> {
     match pop_tok(c) {
         // Root statements always begin with an id
@@ -40,14 +74,9 @@ fn parse_root_statement(c: &mut ParseContext) -> Option<RootStatement> {
                     push_tok(c, Token::LParen);
                     parse_fun(c, id)
                 },
-                Some(Token::Semicolon) => {
-                    Some(RootStatement::Variable(Var::Single(id)))
-                },
-                Some(other) => {
-                    c.error = Some(format!(
-                        "Expected ( or ;. Found {:?}", other
-                    ));
-                    None
+                Some(tok) => {
+                    push_tok(c, tok);
+                    parse_global_var(c, id)
                 },
                 None => None,
             }
