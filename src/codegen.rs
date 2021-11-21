@@ -122,7 +122,7 @@ fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
 
 fn gen_op_cmp(
     command: &str, lhs_loc: Loc, rhs_loc: Loc
-) -> (LinkedList<String>, Loc, Vec<Reg>) {
+) -> (LinkedList<String>, Loc, RegSet) {
     let mut instructions = ll!(format!("cmpq {},{}", rhs_loc, lhs_loc),
                                format!("movq $0,{}", lhs_loc));
 
@@ -132,13 +132,13 @@ fn gen_op_cmp(
         panic!("LHS must be a register");
     }
 
-    (instructions, lhs_loc, vec!())
+    (instructions, lhs_loc, RegSet::empty())
 }
 
 fn gen_op_single(
     command: &str, lhs_loc: Loc, rhs_loc: Loc
-) -> (LinkedList<String>, Loc, Vec<Reg>) {
-    (ll!(format!("{} {},{}", command, rhs_loc, lhs_loc)), lhs_loc, vec!())
+) -> (LinkedList<String>, Loc, RegSet) {
+    (ll!(format!("{} {},{}", command, rhs_loc, lhs_loc)), lhs_loc, RegSet::empty())
 }
 
 /**
@@ -147,10 +147,10 @@ fn gen_op_single(
  */
 fn gen_op_pre_div(
     lhs_loc: Loc, init_rhs_loc: Loc
-) -> (LinkedList<String>, Vec<Reg>) {
+) -> (LinkedList<String>, RegSet) {
     let mut instructions = ll!();
     // rax and rdx are always used for div or mod
-    let mut used_registers = vec!(Reg::Rax, Reg::Rdx);
+    let mut used_registers = RegSet::of(Reg::Rax).with(Reg::Rdx);
 
     let should_move_rhs = match init_rhs_loc {
         Loc::Register(Reg::Rax) => true,
@@ -167,7 +167,7 @@ fn gen_op_pre_div(
             _                       => Reg::Rcx,
         };
 
-        used_registers.push(dest_reg);
+        used_registers = used_registers.with(dest_reg);
         instructions.push_back(format!(
             "movq {},%{}", init_rhs_loc, dest_reg
         ));
@@ -189,14 +189,14 @@ fn gen_op_pre_div(
 
 fn gen_op_mod(
     lhs_loc: Loc, rhs_loc: Loc
-) -> (LinkedList<String>, Loc, Vec<Reg>) {
+) -> (LinkedList<String>, Loc, RegSet) {
     let (instructions, used_registers) = gen_op_pre_div(lhs_loc, rhs_loc);
     (instructions, Loc::Register(Reg::Rdx), used_registers)
 }
 
 fn gen_op_div(
     lhs_loc: Loc, rhs_loc: Loc
-) -> (LinkedList<String>, Loc, Vec<Reg>) {
+) -> (LinkedList<String>, Loc, RegSet) {
     let (instructions, used_registers) = gen_op_pre_div(lhs_loc, rhs_loc);
     (instructions, Loc::Register(Reg::Rax), used_registers)
 }
@@ -209,7 +209,7 @@ fn gen_op_div(
  */
 fn gen_op_command(
     op: &Op, lhs_loc: Loc, rhs_loc: Loc
-) -> (LinkedList<String>, Loc, Vec<Reg>) {
+) -> (LinkedList<String>, Loc, RegSet) {
     match op {
         Op::Add        => gen_op_single("addq", lhs_loc, rhs_loc),
         Op::Sub        => gen_op_single("subq", lhs_loc, rhs_loc),
@@ -226,16 +226,8 @@ fn gen_op_command(
     }
 }
 
-fn get_safe_registers(used_registers: &Vec<Reg>) -> Vec<Reg> {
-    let mut safe_registers = vec!();
-
-    for reg in USABLE_CALLER_SAVE_REG {
-        if !used_registers.contains(reg) {
-            safe_registers.push(*reg);
-        }
-    }
-
-    safe_registers
+fn get_safe_registers(used_registers: RegSet) -> RegSet {
+    RegSet::usable_caller_save().subtract(&used_registers)
 }
 
 /**
@@ -245,17 +237,17 @@ fn get_safe_registers(used_registers: &Vec<Reg>) -> Vec<Reg> {
  * The returned lhs_loc is guaranteed to be in a register
  * @return (instructions, lhs_loc, rhs_loc, used_registers)
  */
-fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Loc, Vec<Reg>) {
+fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Loc, RegSet) {
     // Generate instructions for RHS first so we know which registers are safe
     let (mut rhs_ins, rhs_loc, mut used_registers) = gen_expr(c, rhs);
-    let safe_registers = get_safe_registers(&used_registers);
+    let safe_registers = get_safe_registers(used_registers.clone());
 
-    let (mut lhs_ins, lhs_loc, mut lhs_registers) = gen_expr(c, lhs);
-    used_registers.append(&mut lhs_registers);
+    let (mut lhs_ins, lhs_loc, lhs_registers) = gen_expr(c, lhs);
+    used_registers = used_registers.union(lhs_registers);
 
     // If the lhs_loc is already in a safe register, don't move it
     if let Loc::Register(lhs_reg) = lhs_loc {
-        if safe_registers.contains(&lhs_reg) {
+        if safe_registers.contains(lhs_reg) {
             lhs_ins.append(&mut rhs_ins);
             return (lhs_ins, lhs_loc, rhs_loc, used_registers);
         }
@@ -264,10 +256,10 @@ fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Lo
     let new_lhs_loc = match safe_registers.first() {
         // If there are safe registers available, store the lhs there
         Some(dest_reg) => {
-            used_registers.push(*dest_reg);
+            used_registers = used_registers.with(dest_reg);
             lhs_ins.push_back(format!("movq {},%{}", lhs_loc, dest_reg));
             lhs_ins.append(&mut rhs_ins);
-            Loc::Register(*dest_reg)
+            Loc::Register(dest_reg)
         },
         // Nowhere is safe! Store LHS on the stack
         None => {
@@ -303,30 +295,32 @@ fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Lo
 
 fn gen_op(
     c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr
-) -> (LinkedList<String>, Loc, Vec<Reg>) {
+) -> (LinkedList<String>, Loc, RegSet) {
     let (mut instructions, lhs_loc, rhs_loc, mut used_registers) =
         gen_pre_op(c, lhs, rhs);
 
     // Run the command!
-    let (mut op_ins, op_loc, mut op_registers) =
+    let (mut op_ins, op_loc, op_registers) =
         gen_op_command(op, lhs_loc, rhs_loc);
 
     instructions.append(&mut op_ins);
-    used_registers.append(&mut op_registers);
+    used_registers = used_registers.union(op_registers);
 
     (instructions, op_loc, used_registers)
 }
 
-fn gen_syscall(c: &FunContext, params: &Vec<Expr>) -> (LinkedList<String>, Loc, Vec<Reg>) {
+fn gen_syscall(
+    c: &FunContext, params: &Vec<Expr>
+) -> (LinkedList<String>, Loc, RegSet) {
     if params.len() == 0 || params.len() > 7 {
         panic!("syscall() must take between 1-7 arguments");
     }
 
     let mut instructions = ll!();
-    let mut used_registers = vec!();
+    let mut used_registers = RegSet::empty();
 
     for param in params.iter().rev() {
-        let (mut param_inst, param_loc, mut param_used_reg) =
+        let (mut param_inst, param_loc, param_used_reg) =
             gen_expr(c, &param);
 
         instructions.append(&mut param_inst);
@@ -335,7 +329,7 @@ fn gen_syscall(c: &FunContext, params: &Vec<Expr>) -> (LinkedList<String>, Loc, 
         // No point pushing memory or immediate locations to the stack!
         instructions.push_back(format!("pushq {}", param_loc));
 
-        used_registers.append(&mut param_used_reg);
+        used_registers = used_registers.union(param_used_reg);
     }
 
     for i in 0..params.len() {
@@ -348,7 +342,9 @@ fn gen_syscall(c: &FunContext, params: &Vec<Expr>) -> (LinkedList<String>, Loc, 
     (instructions, Loc::Register(Reg::Rax), used_registers)
 }
 
-fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<String>, Loc, Vec<Reg>) {
+fn gen_call(
+    c: &FunContext, name: &String, params: &Vec<Expr>
+) -> (LinkedList<String>, Loc, RegSet) {
     if name == "syscall" {
         return gen_syscall(c, params);
     }
@@ -397,11 +393,12 @@ fn gen_call(c: &FunContext, name: &String, params: &Vec<Expr>) -> (LinkedList<St
     }
 
     // Assume we used all the registers, since we're calling an unknown function
-    let used_vars: Vec<Reg> = USABLE_CALLER_SAVE_REG.to_vec();
-    (instructions, Loc::Register(Reg::Rax), used_vars)
+    (instructions, Loc::Register(Reg::Rax), RegSet::usable_caller_save())
 }
 
-fn gen_reference(c: &FunContext, name: &String) -> (LinkedList<String>, Loc, Vec<Reg>) {
+fn gen_reference(
+    c: &FunContext, name: &String
+) -> (LinkedList<String>, Loc, RegSet) {
     match c.variables.get(name) {
         Some(Loc::Stack(offset)) => {
             let dest_reg = Reg::Rax;
@@ -413,20 +410,22 @@ fn gen_reference(c: &FunContext, name: &String) -> (LinkedList<String>, Loc, Vec
                 instructions.push_back(format!("addq ${},%{}", 8 * offset, dest_reg));
             }
 
-            (instructions, Loc::Register(dest_reg), vec!(dest_reg))
+            (instructions, Loc::Register(dest_reg), RegSet::of(dest_reg))
         },
         Some(other) => panic!("Variable cannot be at {}!", other),
         None => panic!("{} not in scope", name),
     }
 }
 
-fn gen_dereference(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
+fn gen_dereference(
+    c: &FunContext, expr: &Expr
+) -> (LinkedList<String>, Loc, RegSet) {
     let (mut instructions, target_loc, mut used_registers) = gen_expr(c, expr);
 
     let dest_reg = match used_registers.first() {
-        Some(reg) => *reg,
+        Some(reg) => reg,
         None => {
-            used_registers.push(Reg::Rax);
+            used_registers = used_registers.with(Reg::Rax);
             Reg::Rax
         },
     };
@@ -440,7 +439,7 @@ fn gen_dereference(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, Vec
 // Generates the RHS instructions for an assignment
 fn gen_expr_ass_rhs(
     c: &FunContext, rhs: &Expr
-) -> (LinkedList<String>, Reg, Vec<Reg>) {
+) -> (LinkedList<String>, Reg, RegSet) {
     let (mut instructions, rhs_loc, mut used_registers) = gen_expr(c, rhs);
 
     match rhs_loc {
@@ -448,10 +447,10 @@ fn gen_expr_ass_rhs(
         // Because we can't movq from memory to memory
         rhs_loc => {
             // Reuse a register if possible
-            let rhs_reg = match used_registers.last() {
-                Some(reg) => *reg,
+            let rhs_reg = match used_registers.first() {
+                Some(reg) => reg,
                 None => {
-                    used_registers.push(Reg::Rax);
+                    used_registers = used_registers.with(Reg::Rax);
                     Reg::Rax
                 },
             };
@@ -464,7 +463,7 @@ fn gen_expr_ass_rhs(
 
 fn gen_expr_ass(
     c: &FunContext, lhs_name: &String, rhs: &Expr
-) -> (LinkedList<String>, Loc, Vec<Reg>) {
+) -> (LinkedList<String>, Loc, RegSet) {
     let (mut instructions, rhs_reg, used_registers) =
         gen_expr_ass_rhs(c, rhs);
 
@@ -480,21 +479,21 @@ fn gen_expr_ass(
 // FIXME: This register assignment technique is super similar in other places
 fn gen_expr_deref_ass(
     c: &FunContext, lhs: &Expr, rhs: &Expr
-) -> (LinkedList<String>, Loc, Vec<Reg>) {
+) -> (LinkedList<String>, Loc, RegSet) {
     let (mut instructions, lhs_loc, mut used_registers) = gen_expr(c, lhs);
-    let (mut rhs_inst, rhs_reg, mut rhs_used) = gen_expr_ass_rhs(c, rhs);
-    let safe_registers = get_safe_registers(&rhs_used);
+    let (mut rhs_inst, rhs_reg, rhs_used) = gen_expr_ass_rhs(c, rhs);
+    let safe_registers = get_safe_registers(rhs_used.clone());
 
     let lhs_dest_reg = match safe_registers.first() {
         Some(safe_reg) => match lhs_loc {
-            Loc::Register(lhs_reg) if safe_registers.contains(&lhs_reg) =>
+            Loc::Register(lhs_reg) if safe_registers.contains(lhs_reg) =>
                 Some(lhs_reg),
             lhs_loc => {
                 instructions.push_back(format!(
                     "movq {},%{}", lhs_loc, safe_reg
                 ));
-                used_registers.push(*safe_reg);
-                Some(*safe_reg)
+                used_registers = used_registers.with(safe_reg);
+                Some(safe_reg)
             },
         },
         None => {
@@ -505,7 +504,7 @@ fn gen_expr_deref_ass(
     };
 
     instructions.append(&mut rhs_inst);
-    used_registers.append(&mut rhs_used);
+    used_registers = used_registers.union(rhs_used);
 
     // If needed, pull the LHS address back into a register
     let dest_reg = match lhs_dest_reg {
@@ -531,9 +530,9 @@ fn gen_expr_deref_ass(
     (instructions, Loc::Register(rhs_reg), used_registers)
 }
 
-fn gen_int(signed: i64) -> (LinkedList<String>, Loc, Vec<Reg>) {
+fn gen_int(signed: i64) -> (LinkedList<String>, Loc, RegSet) {
     if signed < i32::MAX as i64 && signed >= i32::MIN as i64 {
-        (ll!(), Loc::Immediate(signed), vec!())
+        (ll!(), Loc::Immediate(signed), RegSet::empty())
     } else {
         let unsigned = signed as u64;
         let dest_reg = Reg::Rax;
@@ -548,19 +547,19 @@ fn gen_int(signed: i64) -> (LinkedList<String>, Loc, Vec<Reg>) {
             format!("addq ${},%{}", lower, dest_reg)
         );
 
-        (instructions, Loc::Register(dest_reg), vec!(dest_reg))
+        (instructions, Loc::Register(dest_reg), RegSet::of(dest_reg))
     }
 }
 
 /**
  * @return (instructions, location, used_registers)
  */
-fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, Vec<Reg>) {
+fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, RegSet) {
     match expr {
         Expr::Int(value) => gen_int(*value),
         Expr::Id(name) => {
             match c.variables.get(name) {
-                Some(location) => (ll!(), *location, vec!()),
+                Some(location) => (ll!(), *location, RegSet::empty()),
                 None => panic!("Variable {} not in scope", name),
             }
         },

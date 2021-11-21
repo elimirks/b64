@@ -1,12 +1,24 @@
 use std::fmt;
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq, Hash, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum Reg {
-    Rax, Rbx, Rcx, Rdx,
-    Rdi, Rsi, Rbp, Rsp,
-    R8,  R9,  R10, R11,
-    R12, R13, R14, R15,
+    Rax = 0b0000000000000001,
+    Rbx = 0b0000000000000010,
+    Rcx = 0b0000000000000100,
+    Rdx = 0b0000000000001000,
+    Rdi = 0b0000000000010000,
+    Rsi = 0b0000000000100000,
+    Rbp = 0b0000000001000000,
+    Rsp = 0b0000000010000000,
+    R8  = 0b0000000100000000,
+    R9  = 0b0000001000000000,
+    R10 = 0b0000010000000000,
+    R11 = 0b0000100000000000,
+    R12 = 0b0001000000000000,
+    R13 = 0b0010000000000000,
+    R14 = 0b0100000000000000,
+    R15 = 0b1000000000000000,
 }
 
 impl Reg {
@@ -60,14 +72,89 @@ impl Reg {
             }
         }
     }
+
+    // Expects the mask to only represent ONE register
+    fn from_u16(mask: u16) -> Reg {
+        match mask {
+            0b0000000000000001 => Reg::Rax,
+            0b0000000000000010 => Reg::Rbx,
+            0b0000000000000100 => Reg::Rcx,
+            0b0000000000001000 => Reg::Rdx,
+            0b0000000000010000 => Reg::Rdi,
+            0b0000000000100000 => Reg::Rsi,
+            0b0000000001000000 => Reg::Rbp,
+            0b0000000010000000 => Reg::Rsp,
+            0b0000000100000000 => Reg::R8,
+            0b0000001000000000 => Reg::R9,
+            0b0000010000000000 => Reg::R10,
+            0b0000100000000000 => Reg::R11,
+            0b0001000000000000 => Reg::R12,
+            0b0010000000000000 => Reg::R13,
+            0b0100000000000000 => Reg::R14,
+            0b1000000000000000 => Reg::R15,
+            _ => panic!("{} is not a valid register mask", mask),
+        }
+    }
 }
 
-// Caller save registers, except for %rsp
-pub const USABLE_CALLER_SAVE_REG: &'static [Reg] = &[
-    Reg::Rax, Reg::Rcx, Reg::Rdx, Reg::Rdi,
-    Reg::Rsi, Reg::R8,  Reg::R9,  Reg::R10,
-    Reg::R11,
-];
+// Efficiently represents a set of registers
+#[derive(Clone)]
+pub struct RegSet {
+    bitmask: u16
+}
+
+impl RegSet {
+    pub fn empty() -> RegSet {
+        RegSet { bitmask: 0 }
+    }
+
+    pub fn of(reg: Reg) -> RegSet {
+        RegSet { bitmask: reg as u16 }
+    }
+
+    pub fn usable_caller_save() -> RegSet {
+        let registers = [
+            Reg::Rax, Reg::Rcx, Reg::Rdx, Reg::Rdi,
+            Reg::Rsi, Reg::R8,  Reg::R9,  Reg::R10,
+            Reg::R11,
+        ];
+
+        let mut mask = 0;
+        for reg in registers {
+            mask = mask | (reg as u16);
+        }
+
+        RegSet { bitmask: mask }
+    }
+
+    pub fn contains(&self, reg: Reg) -> bool {
+        (self.bitmask & (reg as u16)) != 0
+    }
+
+    pub fn union(&self, other: RegSet) -> RegSet {
+        RegSet {
+            bitmask: self.bitmask | other.bitmask
+        }
+    }
+
+    pub fn subtract(&self, other: &RegSet) -> RegSet {
+        RegSet { bitmask: self.bitmask & !other.bitmask }
+    }
+
+    pub fn with(&self, reg: Reg) -> RegSet {
+        let reg_mask = reg as u16;
+        RegSet { bitmask: self.bitmask | reg_mask }
+    }
+
+    pub fn first(&self) -> Option<Reg> {
+        if self.bitmask == 0 {
+            None
+        } else {
+            let lowest_bit = self.bitmask & (!self.bitmask + 1);
+            Some(Reg::from_u16(lowest_bit))
+        }
+    }
+}
 
 // Where values are located
 #[derive(Clone, Copy, PartialEq)]
