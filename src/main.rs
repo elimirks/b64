@@ -6,7 +6,7 @@ mod tokenizer;
 
 use std::fs;
 use std::io;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use clap::Parser;
 
@@ -44,11 +44,31 @@ fn main() {
         let mut stdout = io::stdout();
         generate(root_statements, &mut stdout);
     } else {
-        let tmp_file_path = "/tmp/b64.s";
-        let mut tmp_file = fs::File::create(tmp_file_path)
-            .expect("Couldn't create temp asm file");
+        let tmp_obj_path = "/tmp/b64.o";
 
-        generate(root_statements, &mut tmp_file);
+        let mut as_process = Command::new("as")
+            .stdin(Stdio::piped())
+            .arg("-o")
+            .arg(tmp_obj_path)
+            .spawn()
+            .expect("Failed running the GNU Assembler");
+
+        // Stream the assembly code straight into GNU assembler
+        generate(root_statements, &mut as_process.stdin.as_ref().unwrap());
+
+        match as_process.wait() {
+            Ok(status) => if !status.success() {
+                let code = match status.code() {
+                    Some(code) => code,
+                    None       => 1,
+                };
+                std::process::exit(code);
+            },
+            Err(message) => {
+                println!("Failed running GNU Assembler: {}", message);
+                std::process::exit(1);
+            },
+        }
 
         let output_path = if opts.run {
             "/tmp/b64.bin".to_string()
@@ -56,19 +76,22 @@ fn main() {
             opts.output
         };
 
-        let gcc_status = Command::new("gcc")
-            .arg("-nostdlib")
-            .arg(tmp_file_path)
+        let ld_status = Command::new("ld")
+            .arg(tmp_obj_path)
             .arg("-o")
             .arg(&output_path)
             .status()
-            .expect("Failed running GCC");
+            .expect("Failed running GNU Linker");
 
-        fs::remove_file(tmp_file_path).unwrap();
-
-        if !gcc_status.success() {
-            std::process::exit(gcc_status.code().unwrap());
+        if !ld_status.success() {
+            let code = match ld_status.code() {
+                Some(code) => code,
+                None       => 1,
+            };
+            std::process::exit(code);
         }
+
+        fs::remove_file(tmp_obj_path).unwrap();
 
         if opts.run {
             let prog_status = Command::new(&output_path)
