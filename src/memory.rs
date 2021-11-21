@@ -157,13 +157,15 @@ impl RegSet {
 }
 
 // Where values are located
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Loc {
     // Stack position relative to %rbp
     // +1 means the return address, +2 means 7th arg, +3 means 8th, ...
     // As per x86_64 Linux calling conventions, the
     // first 6 args are passed into functions by registers
     Stack(i64),
+    // Stored in the data segment with the given label
+    Data(String),
     Register(Reg),
     // "immediate" literal int values
     Immediate(i64),
@@ -181,6 +183,7 @@ impl Loc {
     pub fn is_mem(&self) -> bool {
         match self {
             Loc::Stack(_) => true,
+            Loc::Data(_)  => true,
             _             => false,
         }
     }
@@ -221,6 +224,7 @@ impl fmt::Display for Loc {
             Loc::Stack(offset)    => write!(f, "{}(%rbp)", 8 * offset),
             Loc::Register(reg)    => write!(f, "%{}", reg),
             Loc::Immediate(value) => write!(f, "${}", value),
+            Loc::Data(name)       => write!(f, "{}(%rip)", name),
         }
     }
 }

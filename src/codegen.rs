@@ -63,7 +63,11 @@ impl FunContext {
         if let Some(entry) = self.fun_scope.get(name) {
             return Some(entry);
         }
-        self.global_scope.get(name)
+        match self.global_scope.get(name) {
+            // Only allow referencing global vars when users specify "extrn"
+            Some(ScopeEntry::Var(Loc::Data(_))) => None,
+            other                               => other,
+        }
     }
 }
 
@@ -156,7 +160,7 @@ fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
             Loc::Stack((i as i64) - 4)
         };
 
-        c.local_var_locs.insert(args[i].clone(), loc);
+        c.local_var_locs.insert(args[i].clone(), loc.clone());
         c.add_to_scope(args[i].clone(), ScopeEntry::Var(loc));
     }
     instructions
@@ -425,16 +429,15 @@ fn gen_call(
         let (mut param_instructions, param_loc, _) = gen_expr(c, param);
         instructions.append(&mut param_instructions);
 
-        param_locs.push(param_loc);
-
         if param_loc.is_reg() {
             instructions.push_back(format!("pushq {}", param_loc));
         }
+        param_locs.push(param_loc);
     }
 
     for i in (0..std::cmp::min(6, params.len())).rev() {
         let reg = Reg::for_arg_num(i);
-        let param_loc = param_locs[i];
+        let param_loc = &param_locs[i];
 
         if param_loc.is_reg() {
             instructions.push_back(format!("popq %{}", reg));
@@ -533,7 +536,7 @@ fn gen_expr_ass(
     match c.find_in_scope(lhs_name) {
         Some(ScopeEntry::Var(lhs_loc)) => {
             instructions.push_back(format!("movq %{},{}", rhs_reg, lhs_loc));
-            (instructions, *lhs_loc, used_registers)
+            (instructions, lhs_loc.clone(), used_registers)
         },
         Some(ScopeEntry::Fun(_)) => {
             panic!("Cannot reassign a function");
@@ -627,7 +630,8 @@ fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, RegSet) {
         Expr::Int(value) => gen_int(*value),
         Expr::Id(name) => {
             match c.find_in_scope(name) {
-                Some(ScopeEntry::Var(loc)) => (ll!(), *loc, RegSet::empty()),
+                Some(ScopeEntry::Var(loc)) =>
+                    (ll!(), loc.clone(), RegSet::empty()),
                 Some(ScopeEntry::Fun(_)) =>
                     panic!("{} is a function, and can only be called", name),
                 None => panic!("Variable {} not in scope", name),
@@ -758,7 +762,7 @@ fn gen_auto(c: &mut FunContext, vars: &Vec<Var>) -> LinkedList<String> {
     for var in vars {
         // Guaranteed to exist because of the prepass
         let loc = c.local_var_locs.get(var.name()).unwrap().clone();
-        c.add_to_scope(var.name().clone(), ScopeEntry::Var(loc));
+        c.add_to_scope(var.name().clone(), ScopeEntry::Var(loc.clone()));
 
         if let Var::Vec(_, size) = var {
             // The first value in the stack for a vector is a data pointer
@@ -769,8 +773,24 @@ fn gen_auto(c: &mut FunContext, vars: &Vec<Var>) -> LinkedList<String> {
     instructions
 }
 
-fn gen_extern(_c: &mut FunContext, _vars: &Vec<String>) -> LinkedList<String> {
-    panic!("Extern not implemented yet");
+fn gen_extern(c: &mut FunContext, vars: &Vec<String>) -> LinkedList<String> {
+    for name in vars {
+        if !c.find_in_scope(name).is_none() {
+            panic!("{} is already is scope", name);
+        }
+
+        match c.global_scope.get(name) {
+            Some(ScopeEntry::Var(Loc::Data(_))) => {
+                c.add_to_scope(name.clone(),
+                               ScopeEntry::Var(Loc::Data(name.clone())));
+            },
+            Some(ScopeEntry::Fun(_)) =>
+                panic!("{} is a function, not a global var", name),
+            _ => panic!("Could not find definition for {}", name),
+        }
+    }
+
+    ll!()
 }
 
 // Returns true if the last statement is a return
@@ -843,10 +863,12 @@ fn gen_fun(
 }
 
 // Prepass to find the global scope, before we start evaluating things
-fn populate_global_scope(
+fn root_prepass(
     statements: &Vec<RootStatement>
-) -> HashMap<String, ScopeEntry> {
+) -> (HashMap<String, ScopeEntry>, Vec<&Var>) {
     let mut scope = HashMap::new();
+    let mut root_vars = Vec::<&Var>::new();
+
     for statement in statements {
         match statement {
             RootStatement::Function(name, args, _) => {
@@ -856,23 +878,46 @@ fn populate_global_scope(
 
                 scope.insert(name.clone(), ScopeEntry::Fun(args.len()));
             },
-            RootStatement::Variable(_var) => {
-                panic!("Global vars not supported yet");
+            RootStatement::Variable(var) => {
+                let name = var.name();
+                if scope.contains_key(name) {
+                    panic!("{} already in root scope", name);
+                }
+                root_vars.push(var);
+
+                scope.insert(name.clone(),
+                             ScopeEntry::Var(Loc::Data(name.clone())));
             },
         }
     }
-    scope
+    (scope, root_vars)
 }
 
 pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
     let mut w = BufWriter::new(writer);
+
+    let (global_scope, root_vars) = root_prepass(&statements);
+
+    // Generate data segment
+    writeln!(w, ".data")
+        .expect("Failed writing to output");
+    for var in root_vars {
+        let size = match var {
+            Var::Single(_)    => 1,
+            Var::Vec(_, size) => *size,
+        };
+        let name = var.name();
+
+        writeln!(w, "{}:\n    .zero {}", name, size * 8)
+            .expect("Failed writing to output");
+    }
 
     // Call main, use the return value as the exit status
     writeln!(w, include_str!("../assets/preamble.s"))
         .expect("Failed writing to output");
 
     let mut c = FunContext {
-        global_scope: populate_global_scope(&statements),
+        global_scope: global_scope,
         fun_scope: HashMap::new(),
         block_vars: vec!(),
         local_var_locs: HashMap::new(),
@@ -896,9 +941,8 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
                         .expect("Failed writing to output");
                 }
             },
-            RootStatement::Variable(_var) => {
-                panic!("External vars not yet supported");
-            },
+            // Vars are generated in the prepass
+            RootStatement::Variable(_) => {},
         }
     }
 }
