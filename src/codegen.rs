@@ -6,8 +6,25 @@ use std::io::Write;
 use crate::ast::*;
 use crate::memory::*;
 
+#[derive(Debug)]
+enum ScopeEntry {
+    // Contains the number of args
+    Fun(usize),
+    Var(Loc),
+}
+
 struct FunContext {
-    variables: HashMap<String, Loc>,
+    global_scope: HashMap<String, ScopeEntry>,
+    /*
+     * One HashMap for the entire function scope, for O(1) access
+     * I thought about using a linked list of hashmaps...
+     * But that's a lot of overhead
+     */
+    fun_scope: HashMap<String, ScopeEntry>,
+    // Keeps track of the vars dedicated to the current block
+    // So at the end of a block scope we can remove from the fun_scope
+    block_vars: Vec<Vec<String>>,
+    local_var_locs: HashMap<String, Loc>,
     // Maps from visible label name to compiled label name
     labels: HashMap<String, String>,
     // So we never run out of unique labels
@@ -21,6 +38,32 @@ impl FunContext {
         self.label_counter += 1;
         // By prefixing with '.', it guarantees no collisions with user labels
         format!(".{}_{}", prefix, self.label_counter)
+    }
+
+    fn new_scope(&mut self) {
+        self.block_vars.push(vec!());
+    }
+
+    fn drop_scope(&mut self) {
+        // We know it must exist, since a scope is pushed on function entry
+        for var in self.block_vars.pop().unwrap() {
+            self.fun_scope.remove(&var);
+        }
+    }
+
+    fn add_to_scope(&mut self, name: String, entry: ScopeEntry) {
+        if self.fun_scope.contains_key(&name) {
+            panic!("{} is already in defined in this scope", name);
+        }
+        self.fun_scope.insert(name.clone(), entry);
+        self.block_vars.last_mut().unwrap().push(name);
+    }
+
+    fn find_in_scope(&self, name: &String) -> Option<&ScopeEntry> {
+        if let Some(entry) = self.fun_scope.get(name) {
+            return Some(entry);
+        }
+        self.global_scope.get(name)
     }
 }
 
@@ -37,11 +80,13 @@ macro_rules! ll {
 }
 
 /**
- * Allocates stack memory for auto variables and finds labels.
+ * Allocates stack memory for auto local_var_locs and finds labels.
  * @param body The function body to search for auto declarations
  * @param offset The positive offset from rbp (how much space came before this)
  */
-fn prepass_gen(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<String> {
+fn prepass_gen(
+    c: &mut FunContext, body: &Statement, offset: i64
+) -> LinkedList<String> {
     let mut instructions = ll!();
     let mut stack = vec!(body);
     let mut autos_size = 0;
@@ -61,16 +106,16 @@ fn prepass_gen(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<
                 for var in vars {
                     let name = var.name();
 
-                    if c.variables.contains_key(name) {
+                    if c.local_var_locs.contains_key(name) {
                         panic!("{} already defined in this function", name);
                     }
 
                     let size = match var {
-                        Auto::Vec(_, vec_size) => 1 + vec_size,
-                        Auto::Val(_)           => 1,
+                        Var::Vec(_, vec_size) => 1 + vec_size,
+                        Var::Single(_)        => 1,
                     };
 
-                    c.variables.insert(
+                    c.local_var_locs.insert(
                         name.clone(),
                         Loc::Stack(-offset - autos_size)
                     );
@@ -103,19 +148,16 @@ fn prepass_gen(c: &mut FunContext, body: &Statement, offset: i64) -> LinkedList<
 fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
     let mut instructions = ll!();
     for i in 0..args.len() {
-        if i < 6 {
+        let loc = if i < 6 {
             let register = Reg::for_arg_num(i);
             instructions.push_back(format!("pushq %{}", register));
-            c.variables.insert(
-                args[i].clone(),
-                Loc::Stack(-(i as i64) - 1)
-            );
+            Loc::Stack(-(i as i64) - 1)
         } else {
-            c.variables.insert(
-                args[i].clone(),
-                Loc::Stack((i as i64) - 4)
-            );
-        }
+            Loc::Stack((i as i64) - 4)
+        };
+
+        c.local_var_locs.insert(args[i].clone(), loc);
+        c.add_to_scope(args[i].clone(), ScopeEntry::Var(loc));
     }
     instructions
 }
@@ -138,7 +180,9 @@ fn gen_op_cmp(
 fn gen_op_single(
     command: &str, lhs_loc: Loc, rhs_loc: Loc
 ) -> (LinkedList<String>, Loc, RegSet) {
-    (ll!(format!("{} {},{}", command, rhs_loc, lhs_loc)), lhs_loc, RegSet::empty())
+    (ll!(format!("{} {},{}", command, rhs_loc, lhs_loc)),
+     lhs_loc,
+     RegSet::empty())
 }
 
 /**
@@ -237,7 +281,9 @@ fn get_safe_registers(used_registers: RegSet) -> RegSet {
  * The returned lhs_loc is guaranteed to be in a register
  * @return (instructions, lhs_loc, rhs_loc, used_registers)
  */
-fn gen_pre_op(c: &FunContext, lhs: &Expr, rhs: &Expr) -> (LinkedList<String>, Loc, Loc, RegSet) {
+fn gen_pre_op(
+    c: &FunContext, lhs: &Expr, rhs: &Expr
+) -> (LinkedList<String>, Loc, Loc, RegSet) {
     // Generate instructions for RHS first so we know which registers are safe
     let (mut rhs_ins, rhs_loc, mut used_registers) = gen_expr(c, rhs);
     let safe_registers = get_safe_registers(used_registers.clone());
@@ -349,6 +395,18 @@ fn gen_call(
         return gen_syscall(c, params);
     }
 
+    match c.find_in_scope(name) {
+        Some(ScopeEntry::Fun(arg_num)) => {
+            if params.len() != *arg_num {
+                panic!("{} must accept {} arguments", name, arg_num);
+            }
+        },
+        Some(ScopeEntry::Var(_)) => {
+            panic!("{} is not a function", name);
+        },
+        None => panic!("{} not in scope", name),
+    }
+
     let mut instructions = ll!();
 
     // Evaluate backwards until the 7th var.
@@ -399,20 +457,25 @@ fn gen_call(
 fn gen_reference(
     c: &FunContext, name: &String
 ) -> (LinkedList<String>, Loc, RegSet) {
-    match c.variables.get(name) {
-        Some(Loc::Stack(offset)) => {
+    match c.find_in_scope(name) {
+        Some(ScopeEntry::Var(Loc::Stack(offset))) => {
             let dest_reg = Reg::Rax;
             let mut instructions = ll!(format!("movq %rbp,%{}", dest_reg));
 
             if *offset < 0 {
-                instructions.push_back(format!("subq ${},%{}", 8 * -offset, dest_reg));
+                instructions.push_back(format!(
+                    "subq ${},%{}", 8 * -offset, dest_reg));
             } else if *offset > 0 {
-                instructions.push_back(format!("addq ${},%{}", 8 * offset, dest_reg));
+                instructions.push_back(format!(
+                    "addq ${},%{}", 8 * offset, dest_reg));
             }
 
             (instructions, Loc::Register(dest_reg), RegSet::of(dest_reg))
         },
-        Some(other) => panic!("Variable cannot be at {}!", other),
+        Some(ScopeEntry::Var(other)) =>
+            panic!("Variable cannot be at {:?}!", other),
+        Some(ScopeEntry::Fun(_)) =>
+            panic!("Cannot reference a function (yet) {}", name),
         None => panic!("{} not in scope", name),
     }
 }
@@ -467,12 +530,17 @@ fn gen_expr_ass(
     let (mut instructions, rhs_reg, used_registers) =
         gen_expr_ass_rhs(c, rhs);
 
-    match c.variables.get(lhs_name) {
-        Some(lhs_loc) => {
+    match c.find_in_scope(lhs_name) {
+        Some(ScopeEntry::Var(lhs_loc)) => {
             instructions.push_back(format!("movq %{},{}", rhs_reg, lhs_loc));
             (instructions, *lhs_loc, used_registers)
         },
-        None => panic!("Variable {} not in scope", lhs_name),
+        Some(ScopeEntry::Fun(_)) => {
+            panic!("Cannot reassign a function");
+        },
+        None => {
+            panic!("Variable {} not in scope", lhs_name)
+        },
     }
 }
 
@@ -558,8 +626,10 @@ fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, RegSet) {
     match expr {
         Expr::Int(value) => gen_int(*value),
         Expr::Id(name) => {
-            match c.variables.get(name) {
-                Some(location) => (ll!(), *location, RegSet::empty()),
+            match c.find_in_scope(name) {
+                Some(ScopeEntry::Var(loc)) => (ll!(), *loc, RegSet::empty()),
+                Some(ScopeEntry::Fun(_)) =>
+                    panic!("{} is a function, and can only be called", name),
                 None => panic!("Variable {} not in scope", name),
             }
         },
@@ -683,22 +753,24 @@ fn gen_if_else(
     instructions
 }
 
-fn gen_auto(c: &mut FunContext, vars: &Vec<Auto>) -> LinkedList<String> {
+fn gen_auto(c: &mut FunContext, vars: &Vec<Var>) -> LinkedList<String> {
     let mut instructions = ll!();
     for var in vars {
-        if let Auto::Vec(name, size) = var {
+        // Guaranteed to exist because of the prepass
+        let loc = c.local_var_locs.get(var.name()).unwrap().clone();
+        c.add_to_scope(var.name().clone(), ScopeEntry::Var(loc));
+
+        if let Var::Vec(_, size) = var {
             // The first value in the stack for a vector is a data pointer
-            match c.variables.get(name) {
-                Some(loc @ Loc::Stack(_)) => {
-                    instructions.push_back(format!("movq %rbp,{}", loc));
-                    instructions.push_back(format!("addq ${},{}", size * 8, loc));
-                },
-                // Due to pre-pass, we should always expecte it there
-                _ => panic!("Couldn't find variable on the stack"),
-            }
+            instructions.push_back(format!("movq %rbp,{}", loc));
+            instructions.push_back(format!("addq ${},{}", size * 8, loc));
         }
     }
     instructions
+}
+
+fn gen_extern(_c: &mut FunContext, _vars: &Vec<String>) -> LinkedList<String> {
+    panic!("Extern not implemented yet");
 }
 
 // Returns true if the last statement is a return
@@ -723,13 +795,16 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
         Statement::Return => gen_return(),
         Statement::ReturnExpr(expr) => gen_return_expr(c, expr),
         Statement::Block(statements) => {
+            c.new_scope();
             let mut instructions = ll!();
             for statement in statements {
                 instructions.append(&mut gen_statement(c, statement))
             }
+            c.drop_scope();
             instructions
         },
         Statement::Auto(vars)              => gen_auto(c, vars),
+        Statement::Extern(vars)            => gen_extern(c, vars),
         Statement::Expr(expr)              => gen_expr(c, expr).0,
         Statement::If(cond, if_body, None) => gen_if(c, cond, if_body),
         Statement::While(cond, body)       => gen_while(c, cond, body),
@@ -738,7 +813,10 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
     }
 }
 
-fn gen_fun(c: &mut FunContext, args: Vec<String>, body: Statement) -> LinkedList<String> {
+fn gen_fun(
+    c: &mut FunContext, args: Vec<String>, body: Statement
+) -> LinkedList<String> {
+    c.new_scope();
     // Save base pointer, since it's callee-saved
     let mut instructions = ll!(format!("pushq %rbp"),
                                format!("movq %rsp,%rbp"));
@@ -760,7 +838,30 @@ fn gen_fun(c: &mut FunContext, args: Vec<String>, body: Statement) -> LinkedList
         instructions.append(&mut gen_return());
     }
 
+    c.drop_scope();
     instructions
+}
+
+// Prepass to find the global scope, before we start evaluating things
+fn populate_global_scope(
+    statements: &Vec<RootStatement>
+) -> HashMap<String, ScopeEntry> {
+    let mut scope = HashMap::new();
+    for statement in statements {
+        match statement {
+            RootStatement::Function(name, args, _) => {
+                if scope.contains_key(name) {
+                    panic!("{} already in root scope", name);
+                }
+
+                scope.insert(name.clone(), ScopeEntry::Fun(args.len()));
+            },
+            RootStatement::Variable(_var) => {
+                panic!("Global vars not supported yet");
+            },
+        }
+    }
+    scope
 }
 
 pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
@@ -771,7 +872,10 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
         .expect("Failed writing to output");
 
     let mut c = FunContext {
-        variables: HashMap::new(),
+        global_scope: populate_global_scope(&statements),
+        fun_scope: HashMap::new(),
+        block_vars: vec!(),
+        local_var_locs: HashMap::new(),
         labels: HashMap::new(),
         label_counter: 0,
         break_dest_stack: vec!(),
@@ -781,7 +885,7 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
         match statement {
             RootStatement::Function(name, args, body) => {
                 // FIXME: I kinda hate this
-                c.variables.clear();
+                c.local_var_locs.clear();
                 c.labels.clear();
 
                 let instructions = gen_fun(&mut c, args, body);
@@ -791,6 +895,9 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
                     writeln!(w, "    {}", instruction)
                         .expect("Failed writing to output");
                 }
+            },
+            RootStatement::Variable(_var) => {
+                panic!("External vars not yet supported");
             },
         }
     }

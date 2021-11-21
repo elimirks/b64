@@ -238,7 +238,7 @@ fn get_tok_word(c: &mut ParseContext) -> Option<Token> {
     let tok = match str_word.as_str() {
         "return" => Token::Return,
         "auto"   => Token::Auto,
-        "extern" => Token::Extern,
+        "extrn"  => Token::Extern,
         "eof"    => Token::Eof,
         "while"  => Token::While,
         "if"     => Token::If,

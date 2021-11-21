@@ -35,7 +35,22 @@ fn parse_root_statement(c: &mut ParseContext) -> Option<RootStatement> {
     match pop_tok(c) {
         // Root statements always begin with an id
         Some(Token::Id(id)) => {
-            parse_fun(c, id)
+            match pop_tok(c) {
+                Some(Token::LParen) => {
+                    push_tok(c, Token::LParen);
+                    parse_fun(c, id)
+                },
+                Some(Token::Semicolon) => {
+                    Some(RootStatement::Variable(Var::Single(id)))
+                },
+                Some(other) => {
+                    c.error = Some(format!(
+                        "Expected ( or ;. Found {:?}", other
+                    ));
+                    None
+                },
+                None => None,
+            }
         },
         Some(Token::Eof) => None,
         Some(other) => {
@@ -106,6 +121,7 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
         Token::Break       => parse_statement_break(c),
         Token::LBrace      => parse_statement_block(c),
         Token::Auto        => parse_statement_auto(c),
+        Token::Extern      => parse_statement_extern(c),
         Token::If          => parse_statement_if(c),
         Token::While       => parse_statement_while(c),
         Token::Semicolon   => Some(Statement::Null),
@@ -118,13 +134,13 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
     }
 }
 
-fn parse_auto_entry(c: &mut ParseContext, name: String) -> Option<Auto> {
+fn parse_auto_entry(c: &mut ParseContext, name: String) -> Option<Var> {
     match pop_tok(c) {
         Some(Token::LBracket) => {
             match pop_tok(c) {
                 Some(Token::Value(value)) if value >= 1 => {
                     if parse_tok(c, Token::RBracket) {
-                        Some(Auto::Vec(name, value))
+                        Some(Var::Vec(name, value))
                     } else {
                         None
                     }
@@ -140,15 +156,55 @@ fn parse_auto_entry(c: &mut ParseContext, name: String) -> Option<Auto> {
         },
         Some(tok) => {
             push_tok(c, tok);
-            Some(Auto::Val(name))
+            Some(Var::Single(name))
         },
         None => None,
     }
 }
 
+// TODO: This loop delim technique is used in multiple places. Abstract away!
+// Expects opening `extrn` to have been parsed
+fn parse_statement_extern(c: &mut ParseContext) -> Option<Statement> {
+    let mut ids = Vec::<String>::new();
+    let mut should_parse_param = true;
+
+    loop {
+        let tok = pop_tok(c);
+        if tok.is_none() {
+            return None;
+        }
+
+        match tok.unwrap() {
+            Token::Semicolon => break,
+            Token::Id(id) => {
+                if !should_parse_param {
+                    c.error = Some("Comma expected, id found".to_string());
+                    return None;
+                }
+
+                ids.push(id);
+                should_parse_param = false;
+            },
+            Token::Comma => {
+                if should_parse_param {
+                    c.error = Some("id expected, comma found".to_string());
+                    return None;
+                }
+                should_parse_param = true;
+            },
+            other => {
+                c.error = Some(format!("Unexpected token: {:?}", other));
+                return None;
+            },
+        }
+    }
+
+    Some(Statement::Extern(ids))
+}
+
 // Expects opening `auto` to have been parsed
 fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
-    let mut ids = Vec::<Auto>::new();
+    let mut vars = Vec::<Var>::new();
     let mut should_parse_param = true;
 
     loop {
@@ -167,7 +223,7 @@ fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
 
                 match parse_auto_entry(c, id) {
                     Some(entry) => {
-                        ids.push(entry);
+                        vars.push(entry);
                         should_parse_param = false;
                     },
                     None => return None,
@@ -187,7 +243,7 @@ fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
         }
     }
 
-    Some(Statement::Auto(ids))
+    Some(Statement::Auto(vars))
 }
 
 // Expect "if" to have been parsed already
