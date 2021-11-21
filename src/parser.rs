@@ -408,6 +408,40 @@ fn chain_expr(c: &mut ParseContext, lhs: Expr, op: Op) -> Option<Expr> {
     }
 }
 
+fn parse_expr_id_unchained(c: &mut ParseContext, id: String) -> Option<Expr> {
+    match pop_tok(c) {
+        Some(Token::LParen) => {
+            parse_expr_call(c, id)
+        },
+        // Handle vector index sugar syntax
+        Some(Token::LBracket) => {
+            let index_expr = parse_expr(c);
+
+            if index_expr.is_none() || !parse_tok(c, Token::RBracket) {
+                return None;
+            }
+
+            Some(Expr::Dereference(
+                Box::new(Expr::Operator(
+                    Op::Add,
+                    Box::new(Expr::Id(id)),
+                    // Multiply by 8 (aka left shift by 4)
+                    Box::new(Expr::Operator(
+                        Op::ShiftLeft,
+                        Box::new(index_expr.unwrap()),
+                        Box::new(Expr::Int(4))
+                    ))
+                ))
+            ))
+        },
+        Some(tok) => {
+            push_tok(c, tok);
+            Some(Expr::Id(id))
+        },
+        None => None,
+    }
+}
+
 fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
     let tok = pop_tok(c);
     if tok.is_none() {
@@ -415,16 +449,7 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
     }
 
     match tok.unwrap() {
-        Token::Id(id) => match pop_tok(c) {
-            Some(Token::LParen) => {
-                parse_expr_call(c, id)
-            },
-            Some(tok) => {
-                push_tok(c, tok);
-                Some(Expr::Id(id))
-            },
-            None                => Some(Expr::Id(id)),
-        },
+        Token::Id(id) => parse_expr_id_unchained(c, id),
         Token::Value(value) => Some(Expr::Int(value)),
         Token::Ampersand => match pop_tok(c) {
             Some(Token::Id(id)) => Some(Expr::Reference(id)),
