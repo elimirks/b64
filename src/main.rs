@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 
 use clap::Parser;
 
-use parser::parse;
+use parser::*;
 use codegen::generate;
 
 #[derive(Parser)]
@@ -31,18 +31,16 @@ struct Opts {
 fn main() {
     let opts: Opts = Opts::parse();
 
-    let mut root_statements = vec!();
+    let parse_result = parse_files(&opts.inputs);
 
-    for input in opts.inputs {
-        let contents = fs::read_to_string(input)
-            .expect("Something went wrong reading the file");
-
-        root_statements.append(&mut parse(contents));
+    if let Some(ref err) = parse_result.error {
+        print_comp_error(&parse_result, &err);
+        std::process::exit(1);
     }
 
     if opts.no_bin {
         let mut stdout = io::stdout();
-        generate(root_statements, &mut stdout);
+        generate(parse_result.root_statements, &mut stdout);
     } else {
         let tmp_obj_path = "/tmp/b64.o";
 
@@ -54,7 +52,7 @@ fn main() {
             .expect("Failed running the GNU Assembler");
 
         // Stream the assembly code straight into GNU assembler
-        generate(root_statements, &mut as_process.stdin.as_ref().unwrap());
+        generate(parse_result.root_statements, &mut as_process.stdin.as_ref().unwrap());
 
         match as_process.wait() {
             Ok(status) => if !status.success() {

@@ -1,16 +1,21 @@
 use crate::ast::*;
 use crate::tokenizer::*;
 
+pub struct ParseResult {
+    // Stored in order of file_id (in Pos)
+    // Stores (file_name, file_contents)
+    pub file_contents: Vec<(String, String)>,
+    pub root_statements: Vec<RootStatement>,
+    pub error: Option<CompErr>,
+}
+
 pub struct ParseContext {
     pub content: Vec<char>,
-    // Offset should only increment once we've parsed a "good" value
+    // Offset for use by the tokenizer
     pub offset: usize,
-    // Store parse errors here.
-    // By convention, return None whenever there is a parse error
-    // And you must always set a message!
-    pub error: Option<String>,
+    pub file_id: usize,
     // Used for the tokenizer stack
-    pub next_tok: Option<Token>,
+    pub next_tok: Option<(Pos, Token)>,
 }
 
 impl ParseContext {
@@ -26,10 +31,6 @@ impl ParseContext {
         self.offset >= self.content.len()
     }
 
-    pub fn has_error(&self) -> bool {
-        !self.error.is_none()
-    }
-
     pub fn pos(&self) -> Pos {
         // TODO: Proper file number
         Pos::new(self.offset, 0)
@@ -37,75 +38,60 @@ impl ParseContext {
 }
 
 fn parse_global_var(
-    c: &mut ParseContext, pos: Pos, id: String
-) -> Option<RootStatement> {
-    match pop_tok(c) {
-        Some(Token::LBracket) => {
-            match pop_tok(c) {
-                Some(Token::Value(size)) if size > 0 => {
-                    if !parse_tok(c, Token::RBracket) {
-                        None
-                    } else if !parse_tok(c, Token::Semicolon) {
-                        None
-                    } else {
-                        Some(RootStatement::Variable(pos, Var::Vec(id, size)))
-                    }
+    c: &mut ParseContext, id: String
+) -> Result<RootStatement, CompErr> {
+    let (pos, tok) = pop_tok(c)?;
+    match tok {
+        Token::LBracket => {
+            let (pos, tok) = pop_tok(c)?;
+            match tok {
+                Token::Value(size) if size > 0 => {
+                    parse_tok(c, Token::RBracket)?;
+                    parse_tok(c, Token::Semicolon)?;
+                    Ok(RootStatement::Variable(pos, Var::Vec(id, size)))
                 },
-                Some(other) => {
-                    c.error = Some(format!(
-                        "Expected positive int. {:?} given", other));
-                    None
-                },
-                None => None,
+                other => CompErr::err(&pos, format!(
+                    "Expected positive int. {:?} given", other)),
             }
         },
-        Some(Token::Semicolon) => {
-            Some(RootStatement::Variable(pos, Var::Single(id)))
+        Token::Semicolon => {
+            Ok(RootStatement::Variable(pos, Var::Single(id)))
         },
-        Some(other) => {
-            c.error = Some(format!(
-                "Expected [, (, or ;. Found {:?}", other
-            ));
-            None
-        },
-        None => None,
+        other => CompErr::err(&pos, format!(
+            "Expected [, (, or ;. Found {:?}", other)),
     }
 }
 
-fn parse_root_statement(c: &mut ParseContext) -> Option<RootStatement> {
-    match pop_tok(c) {
+fn parse_root_statement(
+    c: &mut ParseContext
+) -> Result<Option<RootStatement>, CompErr> {
+    let (pos, tok) = pop_tok(c)?;
+    match tok {
         // Root statements always begin with an id
-        Some(Token::Id(id)) => {
-            let pos = c.pos();
+        Token::Id(id) => {
+            let (pos, tok) = pop_tok(c)?;
 
-            match pop_tok(c) {
-                Some(Token::LParen) => {
-                    push_tok(c, Token::LParen);
-                    parse_fun(c, pos, id)
+            match tok {
+                Token::LParen => {
+                    push_tok(c, (pos.clone(), Token::LParen));
+                    Ok(Some(parse_fun(c, pos, id)?))
                 },
-                Some(tok) => {
-                    push_tok(c, tok);
-                    parse_global_var(c, pos, id)
+                tok => {
+                    push_tok(c, (pos, tok));
+                    Ok(Some(parse_global_var(c, id)?))
                 },
-                None => None,
             }
         },
-        Some(Token::Eof) => None,
-        Some(other) => {
-            c.error = Some(format!("Expected id. {:?} found", other));
-            None
-        },
-        _ => None,
+        Token::Eof => Ok(None),
+        other => CompErr::err(&pos, format!("Expected id. {:?} found", other)),
     }
 }
 
 // Parses everything after the name of a function
 fn parse_fun(
     c: &mut ParseContext, pos: Pos, name: String
-) -> Option<RootStatement> {
-    if !parse_tok(c, Token::LParen) {
-        return None;
-    }
+) -> Result<RootStatement, CompErr> {
+    parse_tok(c, Token::LParen)?;
 
     let mut args = Vec::<String>::new();
     // To alternate between comma & arg parsing
@@ -113,51 +99,38 @@ fn parse_fun(
 
     // Parse args and closing paren
     loop {
-        let tok = pop_tok(c);
-        if tok.is_none() {
-            return None;
-        }
+        let (pos, tok) = pop_tok(c)?;
 
-        match tok.unwrap() {
+        match tok {
             Token::RParen => break,
             Token::Id(id) => {
                 if !should_parse_param {
-                    c.error = Some("Comma expected, id found".to_string());
-                    return None;
+                    return CompErr::err(
+                        &pos, "Comma expected, id found".to_string());
                 }
                 args.push(id);
                 should_parse_param = false;
             },
             Token::Comma => {
                 if should_parse_param {
-                    c.error = Some("id expected, comma found".to_string());
-                    return None;
+                    return CompErr::err(
+                        &pos, "id expected, comma found".to_string());
                 }
                 should_parse_param = true;
             },
-            other => {
-                c.error = Some(format!("Unexpected token: {:?}", other));
-                return None;
-            },
+            other => return CompErr::err(
+                    &pos, format!("Unexpected token: {:?}", other)),
         }
     }
 
-    let body = parse_statement(c);
-    if body.is_none() {
-        return None;
-    }
-
-    Some(RootStatement::Function(pos, name, args, body.unwrap()))
+    let body = parse_statement(c)?;
+    Ok(RootStatement::Function(pos, name, args, body))
 }
 
-fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
-    let pos = c.pos();
-    let tok = pop_tok(c);
-    if tok.is_none() {
-        return None;
-    }
+fn parse_statement(c: &mut ParseContext) -> Result<Statement, CompErr> {
+    let (pos, tok) = pop_tok(c)?;
 
-    match tok.unwrap() {
+    match tok {
         Token::Return      => parse_statement_return(c),
         Token::Break       => parse_statement_break(c),
         Token::LBrace      => parse_statement_block(c),
@@ -165,63 +138,55 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
         Token::Extern      => parse_statement_extern(c),
         Token::If          => parse_statement_if(c),
         Token::While       => parse_statement_while(c),
-        Token::Semicolon   => Some(Statement::Null),
-        Token::Label(name) => Some(Statement::Label(pos, name)),
+        Token::Semicolon   => Ok(Statement::Null),
+        Token::Label(name) => Ok(Statement::Label(pos, name)),
         Token::Goto        => parse_statement_goto(c),
         tok => {
-            push_tok(c, tok);
+            push_tok(c, (pos, tok));
             parse_statement_expr(c)
         },
     }
 }
 
-fn parse_auto_entry(c: &mut ParseContext, name: String) -> Option<Var> {
-    match pop_tok(c) {
-        Some(Token::LBracket) => {
-            match pop_tok(c) {
-                Some(Token::Value(value)) if value >= 1 => {
-                    if parse_tok(c, Token::RBracket) {
-                        Some(Var::Vec(name, value))
-                    } else {
-                        None
-                    }
+fn parse_auto_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
+    let (pos, tok) = pop_tok(c)?;
+
+    match tok {
+       Token::LBracket => {
+            match pop_tok(c)? {
+                (_, Token::Value(value)) if value >= 1 => {
+                    parse_tok(c, Token::RBracket)?;
+                    Ok(Var::Vec(name, value))
                 },
-                Some(other) => {
-                    c.error = Some(format!(
-                        "Expected positive int. Found {:?}", other
-                    ));
-                    None
+                (pos, other) => {
+                    CompErr::err(&pos, format!(
+                        "Expected positive int. Found {:?}", other))
                 },
-                None => None,
             }
         },
-        Some(tok) => {
-            push_tok(c, tok);
-            Some(Var::Single(name))
+        tok => {
+            push_tok(c, (pos, tok));
+            Ok(Var::Single(name))
         },
-        None => None,
     }
 }
 
 // TODO: This loop delim technique is used in multiple places. Abstract away!
 // Expects opening `extrn` to have been parsed
-fn parse_statement_extern(c: &mut ParseContext) -> Option<Statement> {
+fn parse_statement_extern(c: &mut ParseContext) -> Result<Statement, CompErr> {
     let pos = c.pos();
     let mut ids = Vec::<String>::new();
     let mut should_parse_param = true;
 
     loop {
-        let tok = pop_tok(c);
-        if tok.is_none() {
-            return None;
-        }
+        let (pos, tok) = pop_tok(c)?;
 
-        match tok.unwrap() {
+        match tok {
             Token::Semicolon => break,
             Token::Id(id) => {
                 if !should_parse_param {
-                    c.error = Some("Comma expected, id found".to_string());
-                    return None;
+                    return CompErr::err(
+                        &pos, "Comma expected, id found".to_string());
                 }
 
                 ids.push(id);
@@ -229,304 +194,214 @@ fn parse_statement_extern(c: &mut ParseContext) -> Option<Statement> {
             },
             Token::Comma => {
                 if should_parse_param {
-                    c.error = Some("id expected, comma found".to_string());
-                    return None;
+                    return CompErr::err(
+                        &pos, "id expected, comma found".to_string());
                 }
                 should_parse_param = true;
             },
-            other => {
-                c.error = Some(format!("Unexpected token: {:?}", other));
-                return None;
-            },
+            other => return CompErr::err(
+                &pos, format!("Unexpected token: {:?}", other)),
         }
     }
 
-    Some(Statement::Extern(pos, ids))
+    Ok(Statement::Extern(pos, ids))
 }
 
 // Expects opening `auto` to have been parsed
-fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
+fn parse_statement_auto(c: &mut ParseContext) -> Result<Statement, CompErr> {
     let pos = c.pos();
     let mut vars = Vec::<Var>::new();
     let mut should_parse_param = true;
 
     loop {
-        let tok = pop_tok(c);
-        if tok.is_none() {
-            return None;
-        }
-
-        match tok.unwrap() {
+        let (pos, tok) = pop_tok(c)?;
+        match tok {
             Token::Semicolon => break,
             Token::Id(id) => {
                 if !should_parse_param {
-                    c.error = Some("Comma expected, id found".to_string());
-                    return None;
+                    return CompErr::err(
+                        &pos, "Comma expected, id found".to_string());
                 }
 
-                match parse_auto_entry(c, id) {
-                    Some(entry) => {
-                        vars.push(entry);
-                        should_parse_param = false;
-                    },
-                    None => return None,
-                }
+                vars.push(parse_auto_entry(c, id)?);
+                should_parse_param = false;
             },
             Token::Comma => {
                 if should_parse_param {
-                    c.error = Some("id expected, comma found".to_string());
-                    return None;
+                    return CompErr::err(
+                        &pos, "id expected, comma found".to_string());
                 }
                 should_parse_param = true;
             },
-            other => {
-                c.error = Some(format!("Unexpected token: {:?}", other));
-                return None;
-            },
+            other => return CompErr::err(
+                &pos, format!("Unexpected token: {:?}", other)),
         }
     }
 
-    Some(Statement::Auto(pos, vars))
+    Ok(Statement::Auto(pos, vars))
 }
 
 // Expect "if" to have been parsed already
-fn parse_statement_if(c: &mut ParseContext) -> Option<Statement> {
-    if !parse_tok(c, Token::LParen) {
-        return None;
-    }
+fn parse_statement_if(c: &mut ParseContext) -> Result<Statement, CompErr> {
+    parse_tok(c, Token::LParen)?;
+    let cond_expr = parse_expr(c)?;
+    parse_tok(c, Token::RParen)?;
 
-    let cond_expr = parse_expr(c);
-    if cond_expr.is_none() {
-        return None;
-    }
+    let if_body = parse_statement(c)?;
 
-    if !parse_tok(c, Token::RParen) {
-        return None;
-    }
-
-    let if_body = parse_statement(c);
-    if if_body.is_none() {
-        return None;
-    }
-
-    let else_body = match pop_tok(c) {
-        Some(Token::Else) => {
-            match parse_statement(c) {
-                Some(body) => Some(Box::new(body)),
-                _          => return None,
-            }
-        },
-        Some(tok) => {
-            push_tok(c, tok);
+    let else_body = match pop_tok(c)? {
+        (_, Token::Else) => Some(Box::new(parse_statement(c)?)),
+        other => {
+            push_tok(c, other);
             None
         },
-        None => None,
     };
 
-    Some(Statement::If(
-        cond_expr.unwrap(),
-        Box::new(if_body.unwrap()),
+    Ok(Statement::If(
+        cond_expr,
+        Box::new(if_body),
         else_body
     ))
 }
 
 // Expect "goto" to have been parsed already
-fn parse_statement_goto(c: &mut ParseContext) -> Option<Statement> {
-    let pos = c.pos();
-    match pop_tok(c) {
-        Some(Token::Id(name)) => {
-            if !parse_tok(c, Token::Semicolon) {
-                return None;
-            }
-
-            Some(Statement::Goto(pos, name))
+fn parse_statement_goto(c: &mut ParseContext) -> Result<Statement, CompErr> {
+    match pop_tok(c)? {
+        (pos, Token::Id(name)) => {
+            parse_tok(c, Token::Semicolon)?;
+            Ok(Statement::Goto(pos, name))
         },
-        _ => {
-            c.error = Some("Expected ID".to_string());
-            None
-        },
+        (pos, _) => CompErr::err(&pos, "Expected ID".to_string()),
     }
 }
 
 // Expect "while" to have been parsed already
-fn parse_statement_while(c: &mut ParseContext) -> Option<Statement> {
-    if !parse_tok(c, Token::LParen) {
-        return None;
-    }
+fn parse_statement_while(c: &mut ParseContext) -> Result<Statement, CompErr> {
+    parse_tok(c, Token::LParen)?;
+    let cond_expr = parse_expr(c)?;
+    parse_tok(c, Token::RParen)?;
+    let body = parse_statement(c)?;
 
-    let cond_expr = parse_expr(c);
-    if cond_expr.is_none() {
-        return None;
-    }
-
-    if !parse_tok(c, Token::RParen) {
-        return None;
-    }
-
-    let body = parse_statement(c);
-    if body.is_none() {
-        return None;
-    }
-
-    Some(Statement::While(
-        cond_expr.unwrap(),
-        Box::new(body.unwrap())
+    Ok(Statement::While(
+        cond_expr,
+        Box::new(body)
     ))
 }
 
 // Expects opening `{` to have been parsed
-fn parse_statement_block(c: &mut ParseContext) -> Option<Statement> {
+fn parse_statement_block(c: &mut ParseContext) -> Result<Statement, CompErr> {
     let mut statements = Vec::<Statement>::new();
 
     loop {
-        match pop_tok(c) {
-            None => return None,
-            Some(Token::RBrace) => {
-                break;
-            },
-            Some(tok) => {
-                push_tok(c, tok);
-                let statement = parse_statement(c);
-                if statement.is_none() {
-                    return None;
-                }
-                statements.push(statement.unwrap());
+        match pop_tok(c)? {
+            (_, Token::RBrace) => break,
+            other => {
+                push_tok(c, other);
+                statements.push(parse_statement(c)?);
             },
         }
     }
 
-    Some(Statement::Block(statements))
+    Ok(Statement::Block(statements))
 }
 
 // Expects the `break` keyword to have been parsed already
-fn parse_statement_break(c: &mut ParseContext) -> Option<Statement> {
+fn parse_statement_break(c: &mut ParseContext) -> Result<Statement, CompErr> {
     let pos = c.pos();
-    if !parse_tok(c, Token::Semicolon) {
-        return None;
-    }
-
-    Some(Statement::Break(pos))
+    parse_tok(c, Token::Semicolon)?;
+    Ok(Statement::Break(pos))
 }
 
 // Expects the `return` keyword to have been parsed already
-fn parse_statement_return(c: &mut ParseContext) -> Option<Statement> {
-    match pop_tok(c) {
-        Some(Token::LParen) => {},
-        Some(Token::Semicolon) => return Some(Statement::Return),
-        _ => {
-            c.error = Some(format!("Expected ( or ; after return statment"));
-            return None;
-        },
+fn parse_statement_return(c: &mut ParseContext) -> Result<Statement, CompErr> {
+    match pop_tok(c)? {
+        (_, Token::LParen) => {},
+        (_, Token::Semicolon) => return Ok(Statement::Return),
+        (pos, _) => return CompErr::err(&pos, format!(
+            "Expected ( or ; after return statment")),
     }
 
-    let expr = parse_expr(c);
-    if expr.is_none() {
-        return None;
-    }
+    let expr = parse_expr(c)?;
+    parse_tok(c, Token::RParen)?;
+    parse_tok(c, Token::Semicolon)?;
 
-    if !parse_tok(c, Token::RParen) || !parse_tok(c, Token::Semicolon) {
-        return None;
-    }
-
-    Some(Statement::ReturnExpr(expr.unwrap()))
+    Ok(Statement::ReturnExpr(expr))
 }
 
-fn parse_statement_expr(c: &mut ParseContext) -> Option<Statement> {
-    let expr = parse_expr(c);
-    if expr.is_none() {
-        return None;
-    }
-
-    if !parse_tok(c, Token::Semicolon) {
-        return None
-    }
-
-    Some(Statement::Expr(expr.unwrap()))
+fn parse_statement_expr(c: &mut ParseContext) -> Result<Statement, CompErr> {
+    let expr = parse_expr(c)?;
+    parse_tok(c, Token::Semicolon)?;
+    Ok(Statement::Expr(expr))
 }
 
-fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
-    let first_expr = parse_expr_unchained(c);
-    if first_expr.is_none() {
-        return None;
-    }
+fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
+    let first_expr = parse_expr_unchained(c)?;
+    let (pos, next_tok) = pop_tok(c)?;
 
-    let next_tok = pop_tok(c);
-    if next_tok.is_none() {
-        return None;
-    }
-
-    match next_tok.unwrap() {
-        Token::Eq => match first_expr.unwrap() {
-            Expr::Id(pos, lhs) => match parse_expr(c) {
-                Some(rhs) => Some(Expr::Assignment(
-                    pos,
-                    lhs,
-                    Box::new(rhs)
-                )),
-                None => None,
-            },
-            Expr::Dereference(pos, lhs) => match parse_expr(c) {
-                Some(rhs) => Some(Expr::DerefAssignment(pos, lhs, Box::new(rhs))),
-                None      => None,
-            },
-            _ => {
-                c.error = Some(
+    match next_tok {
+        Token::Eq => match first_expr {
+            Expr::Id(pos, lhs) => Ok(Expr::Assignment(
+                pos,
+                lhs,
+                Box::new(parse_expr(c)?)
+            )),
+            Expr::Dereference(pos, lhs) => Ok(Expr::DerefAssignment(
+                pos,
+                lhs,
+                Box::new(parse_expr(c)?)
+            )),
+            expr => {
+                CompErr::err(
+                    &expr.pos(),
                     "lhs of assignment must be an ID or dereference".to_string()
-                );
-                None
+                )
             },
         },
-        Token::Plus       => chain_expr(c, first_expr.unwrap(), Op::Add),
-        Token::Minus      => chain_expr(c, first_expr.unwrap(), Op::Sub),
-        Token::EqEq       => chain_expr(c, first_expr.unwrap(), Op::Eq),
-        Token::Le         => chain_expr(c, first_expr.unwrap(), Op::Le),
-        Token::Lt         => chain_expr(c, first_expr.unwrap(), Op::Lt),
-        Token::Ge         => chain_expr(c, first_expr.unwrap(), Op::Ge),
-        Token::Gt         => chain_expr(c, first_expr.unwrap(), Op::Gt),
-        Token::Ne         => chain_expr(c, first_expr.unwrap(), Op::Ne),
-        Token::ShiftLeft  => chain_expr(c, first_expr.unwrap(), Op::ShiftLeft),
-        Token::ShiftRight => chain_expr(c, first_expr.unwrap(), Op::ShiftRight),
-        Token::Percent    => chain_expr(c, first_expr.unwrap(), Op::Mod),
-        Token::Slash      => chain_expr(c, first_expr.unwrap(), Op::Div),
+        Token::Plus       => chain_expr(c, first_expr, Op::Add),
+        Token::Minus      => chain_expr(c, first_expr, Op::Sub),
+        Token::EqEq       => chain_expr(c, first_expr, Op::Eq),
+        Token::Le         => chain_expr(c, first_expr, Op::Le),
+        Token::Lt         => chain_expr(c, first_expr, Op::Lt),
+        Token::Ge         => chain_expr(c, first_expr, Op::Ge),
+        Token::Gt         => chain_expr(c, first_expr, Op::Gt),
+        Token::Ne         => chain_expr(c, first_expr, Op::Ne),
+        Token::ShiftLeft  => chain_expr(c, first_expr, Op::ShiftLeft),
+        Token::ShiftRight => chain_expr(c, first_expr, Op::ShiftRight),
+        Token::Percent    => chain_expr(c, first_expr, Op::Mod),
+        Token::Slash      => chain_expr(c, first_expr, Op::Div),
         tok => {
             // The next token isn't a chaining token... Rewind!
-            push_tok(c, tok);
-            first_expr
+            push_tok(c, (pos, tok));
+            Ok(first_expr)
         },
     }
 }
 
-fn chain_expr(c: &mut ParseContext, lhs: Expr, op: Op) -> Option<Expr> {
-    let pos = c.pos();
-    let rhs = parse_expr(c);
+fn chain_expr(c: &mut ParseContext, lhs: Expr, op: Op) -> Result<Expr, CompErr> {
+    let rhs = parse_expr(c)?;
 
-    if rhs.is_none() {
-        None
-    } else {
-        Some(Expr::Operator(
-            pos,
-            op,
-            Box::new(lhs),
-            Box::new(rhs.unwrap())
-        ))
-    }
+    Ok(Expr::Operator(
+        rhs.pos(),
+        op,
+        Box::new(lhs),
+        Box::new(rhs)
+    ))
 }
 
-fn parse_expr_id_unchained(c: &mut ParseContext, id: String) -> Option<Expr> {
-    let pos = c.pos();
-    match pop_tok(c) {
-        Some(Token::LParen) => {
+fn parse_expr_id_unchained(
+    c: &mut ParseContext, id: String
+) -> Result<Expr, CompErr> {
+    let (pos, tok) = pop_tok(c)?;
+    match tok {
+        Token::LParen => {
             parse_expr_call(c, id)
         },
         // Handle vector index sugar syntax
-        Some(Token::LBracket) => {
-            let index_expr = parse_expr(c);
+        Token::LBracket => {
+            let index_expr = parse_expr(c)?;
+            parse_tok(c, Token::RBracket)?;
 
-            if index_expr.is_none() || !parse_tok(c, Token::RBracket) {
-                return None;
-            }
-
-            Some(Expr::Dereference(pos.clone(),
+            Ok(Expr::Dereference(pos.clone(),
                 Box::new(Expr::Operator(
                     pos.clone(),
                     Op::Add,
@@ -535,62 +410,44 @@ fn parse_expr_id_unchained(c: &mut ParseContext, id: String) -> Option<Expr> {
                     Box::new(Expr::Operator(
                         pos.clone(),
                         Op::ShiftLeft,
-                        Box::new(index_expr.unwrap()),
+                        Box::new(index_expr),
                         Box::new(Expr::Int(pos, 4))
                     ))
                 ))
             ))
         },
-        Some(tok) => {
-            push_tok(c, tok);
-            Some(Expr::Id(pos, id))
+        tok => {
+            push_tok(c, (pos.clone(), tok));
+            Ok(Expr::Id(pos, id))
         },
-        None => None,
     }
 }
 
-fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
-    let pos = c.pos();
-    let tok = pop_tok(c);
-    if tok.is_none() {
-        return None;
-    }
+fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
+    let (pos, tok) = pop_tok(c)?;
 
-    match tok.unwrap() {
+    match tok {
         Token::Id(id) => parse_expr_id_unchained(c, id),
-        Token::Value(value) => Some(Expr::Int(pos, value)),
-        Token::Ampersand => match pop_tok(c) {
-            Some(Token::Id(id)) => Some(Expr::Reference(pos, id)),
-            Some(tok) => {
-                c.error = Some(format!("Expected id, found {:?}", tok));
-                None
-            },
-            None => None,
+        Token::Value(value) => Ok(Expr::Int(pos, value)),
+        Token::Ampersand => match pop_tok(c)? {
+            (pos, Token::Id(id)) => Ok(Expr::Reference(pos, id)),
+            (pos, tok) => CompErr::err(&pos, format!("Expected id, found {:?}", tok)),
         },
-        Token::Asterisk => match parse_expr_unchained(c) {
-            Some(expr) => Some(Expr::Dereference(pos, Box::new(expr))),
-            None       => None
-        },
+        Token::Asterisk => Ok(Expr::Dereference(
+            pos, Box::new(parse_expr_unchained(c)?))),
         // Allow parens for disambiguation
-        Token::LParen => match parse_expr(c) {
-            Some(expr) => {
-                if parse_tok(c, Token::RParen) {
-                    Some(expr)
-                } else {
-                    None
-                }
-            },
-            None => None,
+        Token::LParen => {
+            let expr = parse_expr(c)?;
+            parse_tok(c, Token::RParen)?;
+            Ok(expr)
         },
-        other => {
-            c.error = Some(format!("Expected expression. {:?} found", other));
-            None
-        }
+        other => CompErr::err(&pos, format!(
+            "Expected expression. {:?} found", other))
     }
 }
 
 // Assumes the rparen has already been parsed
-fn parse_expr_call(c: &mut ParseContext, name: String) -> Option<Expr> {
+fn parse_expr_call(c: &mut ParseContext, name: String) -> Result<Expr, CompErr> {
     let mut params = Vec::<Expr>::new();
     // To alternate between comma & arg parsing
     let mut should_parse_param = true;
@@ -598,36 +455,30 @@ fn parse_expr_call(c: &mut ParseContext, name: String) -> Option<Expr> {
 
     // Parse args and closing paren
     loop {
-        let tok = pop_tok(c);
-        if tok.is_none() {
-            return None;
-        }
+        let (pos, tok) = pop_tok(c)?;
 
-        match tok.unwrap() {
+        match tok {
             Token::RParen => break,
             Token::Comma => {
                 if should_parse_param {
-                    c.error = Some("Expr expected, comma found".to_string());
-                    return None;
+                    return CompErr::err(
+                        &pos, "Expr expected, comma found".to_string());
                 }
                 should_parse_param = true;
             },
             tok => {
-                push_tok(c, tok);
+                push_tok(c, (pos.clone(), tok));
                 if !should_parse_param {
-                    c.error = Some("Comma expected".to_string());
-                    return None;
+                    return CompErr::err(
+                        &pos, "Comma expected".to_string());
                 }
-                match parse_expr(c) {
-                    Some(expr) => params.push(expr),
-                    None       => return None,
-                }
+                params.push(parse_expr(c)?);
                 should_parse_param = false;
             },
         }
     }
 
-    Some(Expr::Call(pos, name, params))
+    Ok(Expr::Call(pos, name, params))
 }
 
 /**
@@ -635,13 +486,13 @@ fn parse_expr_call(c: &mut ParseContext, name: String) -> Option<Expr> {
  * Meant for displaying error messages
  * It has to traverse the entire content to figure it out, so use this with care
  */
-fn get_parse_position(c: &ParseContext) -> (String, usize, usize) {
+fn get_parse_position(content: &Vec<char>, offset: usize) -> (String, usize, usize) {
     let mut row = 1;
     let mut col = 0;
     let mut current_row_offset = 0;
 
-    for i in 0..c.offset {
-        if c.content[i] as char == '\n' {
+    for i in 0..offset {
+        if content[i] as char == '\n' {
             row += 1;
             col = 0;
             current_row_offset = i + 1;
@@ -651,20 +502,24 @@ fn get_parse_position(c: &ParseContext) -> (String, usize, usize) {
     }
 
     let mut row_end = current_row_offset;
-    while row_end < c.content.len() && c.content[row_end] as char != '\n' {
+    while row_end < content.len() && content[row_end] as char != '\n' {
         row_end += 1;
     }
 
-    let line: &String = &c.content[current_row_offset..row_end]
+    let line: &String = &content[current_row_offset..row_end]
         .into_iter()
         .collect();
 
     (line.to_string(), row, col)
 }
 
-fn print_error(c: &mut ParseContext) {
-    let (line, row, col) = get_parse_position(&c);
-    println!("Parse error: {}", c.error.as_ref().unwrap());
+pub fn print_comp_error(parse_result: &ParseResult, err: &CompErr) {
+    let (file_name, content) = &parse_result.file_contents[err.pos.file_id];
+
+    let (line, row, col) = get_parse_position(
+        &content.chars().collect(), err.pos.offset);
+    println!("Parse error: {}", err.message);
+    println!("In file: {}", file_name);
 
     let prefix = format!("{} |", row);
     println!("{}{}", prefix, line);
@@ -676,27 +531,47 @@ fn print_error(c: &mut ParseContext) {
     println!("^")
 }
 
-pub fn parse(content: String) -> Vec<RootStatement> {
+fn parse_content(file_id: usize, content: &String) -> Result<Vec<RootStatement>, CompErr> {
     let mut c = ParseContext {
         content: content.chars().collect(),
         offset: 0,
-        error: None,
+        file_id: file_id,
         next_tok: None,
     };
 
     let mut roots = vec!();
     loop {
-        match parse_root_statement(&mut c) {
+        match parse_root_statement(&mut c)? {
             Some(statement) => roots.push(statement),
-            None => {
-                if c.has_error() {
-                    print_error(&mut c);
-                    std::process::exit(1);
-                } else if c.at_eof() {
-                    break;
-                }
+            None            => break,
+        }
+    }
+    Ok(roots)
+}
+
+pub fn parse_files(paths: &Vec<String>) -> ParseResult {
+    let mut result = ParseResult {
+        file_contents: vec!(),
+        root_statements: vec!(),
+        error: None,
+    };
+
+    for (file_id, path) in paths.iter().enumerate() {
+        let content = std::fs::read_to_string(path)
+            .expect(format!("Failed reading {}", path).as_str());
+
+        match parse_content(file_id, &content) {
+            Ok(mut statements) => {
+                result.root_statements.append(&mut statements);
+                result.file_contents.push((path.to_string(), content));
+            },
+            Err(error) => {
+                result.error = Some(error);
+                result.file_contents.push((path.to_string(), content));
+                break;
             },
         }
     }
-    roots
+
+    result
 }

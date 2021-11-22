@@ -1,4 +1,5 @@
 use crate::parser::ParseContext;
+use crate::ast::{Pos, CompErr};
 
 #[derive(Debug, PartialEq)]
 pub enum Token {
@@ -47,26 +48,23 @@ pub enum Token {
 }
 
 // Returns false if it failed to parse the given token
-pub fn parse_tok(c: &mut ParseContext, expected: Token) -> bool {
-    match pop_tok(c) {
-        Some(recieved) => {
-            if expected == recieved {
-                true
-            } else {
-                c.error = Some(format!("Expected {:?}, but {:?} was found",
-                                       expected, recieved));
-                false
-            }
-        },
-        None => false,
+pub fn parse_tok(c: &mut ParseContext, expected: Token) -> Result<(), CompErr> {
+    let (pos, recieved) = pop_tok(c)?;
+    if expected == recieved {
+        Ok(())
+    } else {
+        CompErr::err(&pos, format!(
+            "Expected {:?}, but {:?} was found", expected, recieved))
     }
 }
 
 // Returns None for invalid tokens
 // Returns Token::Eof for Eof (considered a valid token)
-pub fn pop_tok(c: &mut ParseContext) -> Option<Token> {
+pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     if !c.next_tok.is_none() {
-        return std::mem::replace(&mut c.next_tok, None);
+        let mut temp = None;
+        std::mem::swap(&mut temp, &mut c.next_tok);
+        return Ok(temp.unwrap());
     }
 
     // Seek past useless whitespace
@@ -75,7 +73,7 @@ pub fn pop_tok(c: &mut ParseContext) -> Option<Token> {
     match c.peek_char() {
         Some(ch) => {
             if ch.is_alphabetic() {
-                get_tok_word(c)
+                Ok(get_tok_word(c))
             } else if ch.is_numeric() {
                 get_tok_int(c)
             } else if ch == '\'' {
@@ -84,11 +82,11 @@ pub fn pop_tok(c: &mut ParseContext) -> Option<Token> {
                 get_tok_symbol(c)
             }
         },
-        None => Some(Token::Eof),
+        None => Ok((c.pos(), Token::Eof)),
     }
 }
 
-pub fn push_tok(c: &mut ParseContext, tok: Token) {
+pub fn push_tok(c: &mut ParseContext, tok: (Pos, Token)) {
     if !c.next_tok.is_none() {
         // This is fine. We shouldn't ever have to push more than one token
         // If more than one gets pushed, the parser is doing something silly
@@ -99,73 +97,72 @@ pub fn push_tok(c: &mut ParseContext, tok: Token) {
 
 // Generates a symbol tokenizer match statemnt for ambiguous multi-char tokens
 macro_rules! multi_tok {
-    ($context:expr, $default:expr, $($extra:expr, $token:expr),*) => {
+    ($context:expr, $pos:expr, $default:expr, $($extra:expr, $token:expr),*) => {
         match $context.peek_char() {
             $(
                 Some($extra) => {
                     $context.offset += 1;
-                    Some($token)
+                    Ok(($pos, $token))
                 },
             )*
-            _ => Some($default),
+            _ => Ok(($pos, $default)),
         }
     };
 }
 
 // Assumes c.content[c.offset] is in bounds
-fn get_tok_symbol(c: &mut ParseContext) -> Option<Token> {
+fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
+    let pos = c.pos();
     c.offset += 1;
     match c.content[c.offset - 1] as char {
-        '+' => multi_tok!(c, Token::Plus,
+        '+' => multi_tok!(c, pos, Token::Plus,
                           '+', Token::PlusPlus),
-        '-' => multi_tok!(c, Token::Minus,
+        '-' => multi_tok!(c, pos, Token::Minus,
                           '-', Token::MinusMinus),
-        '=' => multi_tok!(c, Token::Eq,
+        '=' => multi_tok!(c, pos, Token::Eq,
                           '=', Token::EqEq),
-        '>' => multi_tok!(c, Token::Gt,
+        '>' => multi_tok!(c, pos, Token::Gt,
                           '>', Token::ShiftRight,
                           '=', Token::Ge),
-        '<' => multi_tok!(c, Token::Lt,
+        '<' => multi_tok!(c, pos, Token::Lt,
                           '<', Token::ShiftLeft,
                           '=', Token::Le),
-        '!' => multi_tok!(c, Token::Bang,
+        '!' => multi_tok!(c, pos, Token::Bang,
                           '=', Token::Ne),
-        '(' => Some(Token::LParen),
-        ')' => Some(Token::RParen),
-        '{' => Some(Token::LBrace),
-        '}' => Some(Token::RBrace),
-        '[' => Some(Token::LBracket),
-        ']' => Some(Token::RBracket),
-        ';' => Some(Token::Semicolon),
-        ':' => Some(Token::Colon),
-        '?' => Some(Token::Question),
-        ',' => Some(Token::Comma),
-        '*' => Some(Token::Asterisk),
-        '&' => Some(Token::Ampersand),
-        '~' => Some(Token::Tilde),
-        '/' => Some(Token::Slash),
-        '%' => Some(Token::Percent),
+        '(' => Ok((pos, Token::LParen)),
+        ')' => Ok((pos, Token::RParen)),
+        '{' => Ok((pos, Token::LBrace)),
+        '}' => Ok((pos, Token::RBrace)),
+        '[' => Ok((pos, Token::LBracket)),
+        ']' => Ok((pos, Token::RBracket)),
+        ';' => Ok((pos, Token::Semicolon)),
+        ':' => Ok((pos, Token::Colon)),
+        '?' => Ok((pos, Token::Question)),
+        ',' => Ok((pos, Token::Comma)),
+        '*' => Ok((pos, Token::Asterisk)),
+        '&' => Ok((pos, Token::Ampersand)),
+        '~' => Ok((pos, Token::Tilde)),
+        '/' => Ok((pos, Token::Slash)),
+        '%' => Ok((pos, Token::Percent)),
         other => {
             c.offset -= 1;
-            c.error = Some(format!("Invalid token: {}", other));
-            None
+            CompErr::err(&pos, format!("Invalid token: {}", other))
         }
     }
 }
 
-fn get_tok_int(c: &mut ParseContext) -> Option<Token> {
+fn get_tok_int(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
+    let pos = c.pos();
     let current_word = alphanumeric_slice(&c.content, c.offset);
     let str_word: String = current_word.into_iter().collect();
 
     match str_word.parse::<i64>() {
         Ok(num) => {
             c.offset += current_word.len();
-            Some(Token::Value(num))
+            Ok((pos, Token::Value(num)))
         },
-        _ => {
-            c.error = Some(format!("Invalid int literal: {}", str_word));
-            None
-        },
+        _ => CompErr::err(&pos, format!(
+            "Invalid int literal: {}", str_word)),
     }
 }
 
@@ -173,7 +170,8 @@ fn get_tok_int(c: &mut ParseContext) -> Option<Token> {
  * Tokenizes a char literal into a value
  * Expects opening quote character to have been peeked at already
  */
-fn get_tok_char(c: &mut ParseContext) -> Option<Token> {
+fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
+    let pos = c.pos();
     // Start at the character right after the starting quote
     let mut i = c.offset + 1;
     // Index of the char literal, NOT of the content
@@ -196,18 +194,17 @@ fn get_tok_char(c: &mut ParseContext) -> Option<Token> {
                     't'  => '\t' as i64,
                     '\'' => '\'' as i64,
                     '\"' => '\"' as i64,
-                    other => {
-                        c.error = Some(format!("Unknown escape char: {}", other));
-                        return None;
-                    },
+                    other => return CompErr::err(&pos, format!(
+                        "Unknown escape char: {}", other)),
                 }
             },
             chr => {
                 let ichar = chr as i64;
 
                 if ichar >= 256 || ichar < 0 {
-                    c.error = Some("b64 only supports ASCII chars".to_string());
-                    return None;
+                    return CompErr::err(
+                        &pos,
+                        "b64 only supports ASCII chars".to_string());
                 }
 
                 ichar
@@ -221,16 +218,16 @@ fn get_tok_char(c: &mut ParseContext) -> Option<Token> {
     }
 
     if i >= c.content.len() {
-        c.error = Some("Hit EOF while parsing char".to_string());
-        None
+        CompErr::err(&pos, "Hit EOF while parsing char".to_string())
     } else {
         c.offset = i + 1;
-        Some(Token::Value(value))
+        Ok((pos, Token::Value(value)))
     }
 }
 
 // Parsed word-like tokens. Includes keywords and IDs
-fn get_tok_word(c: &mut ParseContext) -> Option<Token> {
+fn get_tok_word(c: &mut ParseContext) -> (Pos, Token) {
+    let pos = c.pos();
     let current_word = alphanumeric_slice(&c.content, c.offset);
     c.offset += current_word.len();
     let str_word: String = current_word.into_iter().collect();
@@ -259,7 +256,7 @@ fn get_tok_word(c: &mut ParseContext) -> Option<Token> {
         },
     };
 
-    Some(tok)
+    (pos, tok)
 }
 
 /**

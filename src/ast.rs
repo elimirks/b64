@@ -1,7 +1,7 @@
 #[derive(Debug, Clone)]
 pub struct Pos {
-    offset: usize,
-    file_id: usize,
+    pub offset: usize,
+    pub file_id: usize,
 }
 
 impl Pos {
@@ -10,6 +10,20 @@ impl Pos {
             offset: offset,
             file_id: file_id,
         }
+    }
+}
+
+pub struct CompErr {
+    pub pos: Pos,
+    pub message: String,
+}
+
+impl CompErr {
+    pub fn err<T>(pos: &Pos, message: String) -> Result<T, CompErr> {
+        Err(CompErr {
+            pos: pos.clone(),
+            message: message,
+        })
     }
 }
 
