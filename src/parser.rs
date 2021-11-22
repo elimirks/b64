@@ -29,9 +29,16 @@ impl ParseContext {
     pub fn has_error(&self) -> bool {
         !self.error.is_none()
     }
+
+    pub fn pos(&self) -> Pos {
+        // TODO: Proper file number
+        Pos::new(self.offset, 0)
+    }
 }
 
-fn parse_global_var(c: &mut ParseContext, id: String) -> Option<RootStatement> {
+fn parse_global_var(
+    c: &mut ParseContext, pos: Pos, id: String
+) -> Option<RootStatement> {
     match pop_tok(c) {
         Some(Token::LBracket) => {
             match pop_tok(c) {
@@ -41,7 +48,7 @@ fn parse_global_var(c: &mut ParseContext, id: String) -> Option<RootStatement> {
                     } else if !parse_tok(c, Token::Semicolon) {
                         None
                     } else {
-                        Some(RootStatement::Variable(Var::Vec(id, size)))
+                        Some(RootStatement::Variable(pos, Var::Vec(id, size)))
                     }
                 },
                 Some(other) => {
@@ -53,7 +60,7 @@ fn parse_global_var(c: &mut ParseContext, id: String) -> Option<RootStatement> {
             }
         },
         Some(Token::Semicolon) => {
-            Some(RootStatement::Variable(Var::Single(id)))
+            Some(RootStatement::Variable(pos, Var::Single(id)))
         },
         Some(other) => {
             c.error = Some(format!(
@@ -69,14 +76,16 @@ fn parse_root_statement(c: &mut ParseContext) -> Option<RootStatement> {
     match pop_tok(c) {
         // Root statements always begin with an id
         Some(Token::Id(id)) => {
+            let pos = c.pos();
+
             match pop_tok(c) {
                 Some(Token::LParen) => {
                     push_tok(c, Token::LParen);
-                    parse_fun(c, id)
+                    parse_fun(c, pos, id)
                 },
                 Some(tok) => {
                     push_tok(c, tok);
-                    parse_global_var(c, id)
+                    parse_global_var(c, pos, id)
                 },
                 None => None,
             }
@@ -91,7 +100,9 @@ fn parse_root_statement(c: &mut ParseContext) -> Option<RootStatement> {
 }
 
 // Parses everything after the name of a function
-fn parse_fun(c: &mut ParseContext, name: String) -> Option<RootStatement> {
+fn parse_fun(
+    c: &mut ParseContext, pos: Pos, name: String
+) -> Option<RootStatement> {
     if !parse_tok(c, Token::LParen) {
         return None;
     }
@@ -136,10 +147,11 @@ fn parse_fun(c: &mut ParseContext, name: String) -> Option<RootStatement> {
         return None;
     }
 
-    Some(RootStatement::Function(name, args, body.unwrap()))
+    Some(RootStatement::Function(pos, name, args, body.unwrap()))
 }
 
 fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
+    let pos = c.pos();
     let tok = pop_tok(c);
     if tok.is_none() {
         return None;
@@ -154,7 +166,7 @@ fn parse_statement(c: &mut ParseContext) -> Option<Statement> {
         Token::If          => parse_statement_if(c),
         Token::While       => parse_statement_while(c),
         Token::Semicolon   => Some(Statement::Null),
-        Token::Label(name) => Some(Statement::Label(name)),
+        Token::Label(name) => Some(Statement::Label(pos, name)),
         Token::Goto        => parse_statement_goto(c),
         tok => {
             push_tok(c, tok);
@@ -194,6 +206,7 @@ fn parse_auto_entry(c: &mut ParseContext, name: String) -> Option<Var> {
 // TODO: This loop delim technique is used in multiple places. Abstract away!
 // Expects opening `extrn` to have been parsed
 fn parse_statement_extern(c: &mut ParseContext) -> Option<Statement> {
+    let pos = c.pos();
     let mut ids = Vec::<String>::new();
     let mut should_parse_param = true;
 
@@ -228,11 +241,12 @@ fn parse_statement_extern(c: &mut ParseContext) -> Option<Statement> {
         }
     }
 
-    Some(Statement::Extern(ids))
+    Some(Statement::Extern(pos, ids))
 }
 
 // Expects opening `auto` to have been parsed
 fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
+    let pos = c.pos();
     let mut vars = Vec::<Var>::new();
     let mut should_parse_param = true;
 
@@ -272,7 +286,7 @@ fn parse_statement_auto(c: &mut ParseContext) -> Option<Statement> {
         }
     }
 
-    Some(Statement::Auto(vars))
+    Some(Statement::Auto(pos, vars))
 }
 
 // Expect "if" to have been parsed already
@@ -318,13 +332,14 @@ fn parse_statement_if(c: &mut ParseContext) -> Option<Statement> {
 
 // Expect "goto" to have been parsed already
 fn parse_statement_goto(c: &mut ParseContext) -> Option<Statement> {
+    let pos = c.pos();
     match pop_tok(c) {
         Some(Token::Id(name)) => {
             if !parse_tok(c, Token::Semicolon) {
                 return None;
             }
 
-            Some(Statement::Goto(name))
+            Some(Statement::Goto(pos, name))
         },
         _ => {
             c.error = Some("Expected ID".to_string());
@@ -385,11 +400,12 @@ fn parse_statement_block(c: &mut ParseContext) -> Option<Statement> {
 
 // Expects the `break` keyword to have been parsed already
 fn parse_statement_break(c: &mut ParseContext) -> Option<Statement> {
+    let pos = c.pos();
     if !parse_tok(c, Token::Semicolon) {
         return None;
     }
 
-    Some(Statement::Break)
+    Some(Statement::Break(pos))
 }
 
 // Expects the `return` keyword to have been parsed already
@@ -441,15 +457,16 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
 
     match next_tok.unwrap() {
         Token::Eq => match first_expr.unwrap() {
-            Expr::Id(lhs) => match parse_expr(c) {
+            Expr::Id(pos, lhs) => match parse_expr(c) {
                 Some(rhs) => Some(Expr::Assignment(
-                        lhs,
-                        Box::new(rhs)
+                    pos,
+                    lhs,
+                    Box::new(rhs)
                 )),
                 None => None,
             },
-            Expr::Dereference(lhs) => match parse_expr(c) {
-                Some(rhs) => Some(Expr::DerefAssignment(lhs, Box::new(rhs))),
+            Expr::Dereference(pos, lhs) => match parse_expr(c) {
+                Some(rhs) => Some(Expr::DerefAssignment(pos, lhs, Box::new(rhs))),
                 None      => None,
             },
             _ => {
@@ -480,12 +497,14 @@ fn parse_expr(c: &mut ParseContext) -> Option<Expr> {
 }
 
 fn chain_expr(c: &mut ParseContext, lhs: Expr, op: Op) -> Option<Expr> {
+    let pos = c.pos();
     let rhs = parse_expr(c);
 
     if rhs.is_none() {
         None
     } else {
         Some(Expr::Operator(
+            pos,
             op,
             Box::new(lhs),
             Box::new(rhs.unwrap())
@@ -494,6 +513,7 @@ fn chain_expr(c: &mut ParseContext, lhs: Expr, op: Op) -> Option<Expr> {
 }
 
 fn parse_expr_id_unchained(c: &mut ParseContext, id: String) -> Option<Expr> {
+    let pos = c.pos();
     match pop_tok(c) {
         Some(Token::LParen) => {
             parse_expr_call(c, id)
@@ -506,28 +526,31 @@ fn parse_expr_id_unchained(c: &mut ParseContext, id: String) -> Option<Expr> {
                 return None;
             }
 
-            Some(Expr::Dereference(
+            Some(Expr::Dereference(pos.clone(),
                 Box::new(Expr::Operator(
+                    pos.clone(),
                     Op::Add,
-                    Box::new(Expr::Id(id)),
+                    Box::new(Expr::Id(pos.clone(), id)),
                     // Multiply by 8 (aka left shift by 4)
                     Box::new(Expr::Operator(
+                        pos.clone(),
                         Op::ShiftLeft,
                         Box::new(index_expr.unwrap()),
-                        Box::new(Expr::Int(4))
+                        Box::new(Expr::Int(pos, 4))
                     ))
                 ))
             ))
         },
         Some(tok) => {
             push_tok(c, tok);
-            Some(Expr::Id(id))
+            Some(Expr::Id(pos, id))
         },
         None => None,
     }
 }
 
 fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
+    let pos = c.pos();
     let tok = pop_tok(c);
     if tok.is_none() {
         return None;
@@ -535,9 +558,9 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
 
     match tok.unwrap() {
         Token::Id(id) => parse_expr_id_unchained(c, id),
-        Token::Value(value) => Some(Expr::Int(value)),
+        Token::Value(value) => Some(Expr::Int(pos, value)),
         Token::Ampersand => match pop_tok(c) {
-            Some(Token::Id(id)) => Some(Expr::Reference(id)),
+            Some(Token::Id(id)) => Some(Expr::Reference(pos, id)),
             Some(tok) => {
                 c.error = Some(format!("Expected id, found {:?}", tok));
                 None
@@ -545,7 +568,7 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Option<Expr> {
             None => None,
         },
         Token::Asterisk => match parse_expr_unchained(c) {
-            Some(expr) => Some(Expr::Dereference(Box::new(expr))),
+            Some(expr) => Some(Expr::Dereference(pos, Box::new(expr))),
             None       => None
         },
         // Allow parens for disambiguation
@@ -571,6 +594,7 @@ fn parse_expr_call(c: &mut ParseContext, name: String) -> Option<Expr> {
     let mut params = Vec::<Expr>::new();
     // To alternate between comma & arg parsing
     let mut should_parse_param = true;
+    let pos = c.pos();
 
     // Parse args and closing paren
     loop {
@@ -603,7 +627,7 @@ fn parse_expr_call(c: &mut ParseContext, name: String) -> Option<Expr> {
         }
     }
 
-    Some(Expr::Call(name, params))
+    Some(Expr::Call(pos, name, params))
 }
 
 /**

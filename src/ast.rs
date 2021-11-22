@@ -1,7 +1,26 @@
+#[derive(Debug, Clone)]
+pub struct Pos {
+    offset: usize,
+    file_id: usize,
+}
+
+impl Pos {
+    pub fn new(offset: usize, file_id: usize) -> Pos {
+        Pos {
+            offset: offset,
+            file_id: file_id,
+        }
+    }
+}
+
+pub trait GetPos {
+    fn pos(&self) -> Pos;
+}
+
 #[derive(Debug)]
 pub enum RootStatement {
-    Function(String, Vec<String>, Statement),
-    Variable(Var),
+    Function(Pos, String, Vec<String>, Statement),
+    Variable(Pos, Var),
 }
 
 #[derive(Debug)]
@@ -10,12 +29,12 @@ pub enum Statement {
     Expr(Expr),
     ReturnExpr(Expr),
     Return,
-    Break,
+    Break(Pos),
     Null, // "no op" essentially
-    Label(String),
-    Goto(String),
-    Auto(Vec<Var>),
-    Extern(Vec<String>),
+    Label(Pos, String),
+    Goto(Pos, String),
+    Auto(Pos, Vec<Var>),
+    Extern(Pos, Vec<String>),
     Block(Vec<Statement>),
     If(Expr, Box<Statement>, Option<Box<Statement>>),
     While(Expr, Box<Statement>),
@@ -38,14 +57,29 @@ impl Var {
 
 #[derive(Debug)]
 pub enum Expr {
-    Id(String),
-    Call(String, Vec<Expr>),
-    Int(i64),
-    Assignment(String, Box<Expr>),
-    DerefAssignment(Box<Expr>, Box<Expr>),
-    Operator(Op, Box<Expr>, Box<Expr>),
-    Reference(String),
-    Dereference(Box<Expr>),
+    Id(Pos, String),
+    Call(Pos, String, Vec<Expr>),
+    Int(Pos, i64),
+    Assignment(Pos, String, Box<Expr>),
+    DerefAssignment(Pos, Box<Expr>, Box<Expr>),
+    Operator(Pos, Op, Box<Expr>, Box<Expr>),
+    Reference(Pos, String),
+    Dereference(Pos, Box<Expr>),
+}
+
+impl GetPos for Expr {
+    fn pos(&self) -> Pos {
+        match self {
+            Expr::Id(pos, _)                 => pos.clone(),
+            Expr::Call(pos, _, _)            => pos.clone(),
+            Expr::Int(pos, _)                => pos.clone(),
+            Expr::Assignment(pos, _, _)      => pos.clone(),
+            Expr::DerefAssignment(pos, _, _) => pos.clone(),
+            Expr::Operator(pos, _, _, _)     => pos.clone(),
+            Expr::Reference(pos, _)          => pos.clone(),
+            Expr::Dereference(pos, _)        => pos.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]

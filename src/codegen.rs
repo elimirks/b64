@@ -6,6 +6,20 @@ use std::io::Write;
 use crate::ast::*;
 use crate::memory::*;
 
+struct GenErr {
+    pos: Pos,
+    message: String,
+}
+
+impl GenErr {
+    pub fn err<T>(pos: &Pos, message: String) -> Result<T, GenErr> {
+        Err(GenErr {
+            pos: pos.clone(),
+            message: message,
+        })
+    }
+}
+
 #[derive(Debug)]
 enum ScopeEntry {
     // Contains the number of args
@@ -51,12 +65,16 @@ impl FunContext<'_> {
         }
     }
 
-    fn add_to_scope(&mut self, name: String, entry: ScopeEntry) {
+    fn add_to_scope(
+        &mut self, pos: &Pos, name: String, entry: ScopeEntry
+    ) -> Result<(), GenErr> {
         if self.fun_scope.contains_key(&name) {
-            panic!("{} is already in defined in this scope", name);
+            return GenErr::err(pos, format!(
+                "{} is already in defined in this scope", name));
         }
         self.fun_scope.insert(name.clone(), entry);
         self.block_vars.last_mut().unwrap().push(name);
+        Ok(())
     }
 
     fn find_in_scope(&self, name: &String) -> Option<&ScopeEntry> {
@@ -90,7 +108,7 @@ macro_rules! ll {
  */
 fn prepass_gen(
     c: &mut FunContext, body: &Statement, offset: i64
-) -> LinkedList<String> {
+) -> Result<LinkedList<String>, GenErr> {
     let mut instructions = ll!();
     let mut stack = vec!(body);
     let mut autos_size = 0;
@@ -98,20 +116,22 @@ fn prepass_gen(
     // DFS to find them all
     while !stack.is_empty() {
         match stack.pop().unwrap() {
-            Statement::Label(name) => {
+            Statement::Label(pos, name) => {
                 if c.labels.contains_key(name) {
-                    panic!("Label {} already defined in this function", name);
+                    return GenErr::err(pos, format!(
+                        "Label {} already defined in this function", name));
                 }
 
                 let l = c.new_label(&format!("LAB_{}", name).to_string());
                 c.labels.insert(name.clone(), l);
             },
-            Statement::Auto(vars) => {
+            Statement::Auto(pos, vars) => {
                 for var in vars {
                     let name = var.name();
 
                     if c.local_var_locs.contains_key(name) {
-                        panic!("{} already defined in this function", name);
+                        return GenErr::err(pos, format!(
+                            "{} already defined in this function", name));
                     }
 
                     let size = match var {
@@ -145,11 +165,13 @@ fn prepass_gen(
         instructions.push_back(format!("subq ${}, %rsp", 8 * autos_size));
     }
 
-    instructions
+    Ok(instructions)
 }
 
 // Allocates the necessary args on the stack
-fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
+fn alloc_args(
+    c: &mut FunContext, pos: &Pos, args: &Vec<String>
+) -> Result<LinkedList<String>, GenErr> {
     let mut instructions = ll!();
     for i in 0..args.len() {
         let loc = if i < 6 {
@@ -161,9 +183,9 @@ fn alloc_args(c: &mut FunContext, args: &Vec<String>) -> LinkedList<String> {
         };
 
         c.local_var_locs.insert(args[i].clone(), loc.clone());
-        c.add_to_scope(args[i].clone(), ScopeEntry::Var(loc));
+        c.add_to_scope(pos, args[i].clone(), ScopeEntry::Var(loc))?;
     }
-    instructions
+    Ok(instructions)
 }
 
 fn gen_op_cmp(
@@ -287,19 +309,19 @@ fn get_safe_registers(used_registers: RegSet) -> RegSet {
  */
 fn gen_pre_op(
     c: &FunContext, lhs: &Expr, rhs: &Expr
-) -> (LinkedList<String>, Loc, Loc, RegSet) {
+) -> Result<(LinkedList<String>, Loc, Loc, RegSet), GenErr> {
     // Generate instructions for RHS first so we know which registers are safe
-    let (mut rhs_ins, rhs_loc, mut used_registers) = gen_expr(c, rhs);
+    let (mut rhs_ins, rhs_loc, mut used_registers) = gen_expr(c, rhs)?;
     let safe_registers = get_safe_registers(used_registers.clone());
 
-    let (mut lhs_ins, lhs_loc, lhs_registers) = gen_expr(c, lhs);
+    let (mut lhs_ins, lhs_loc, lhs_registers) = gen_expr(c, lhs)?;
     used_registers = used_registers.union(lhs_registers);
 
     // If the lhs_loc is already in a safe register, don't move it
     if let Loc::Register(lhs_reg) = lhs_loc {
         if safe_registers.contains(lhs_reg) {
             lhs_ins.append(&mut rhs_ins);
-            return (lhs_ins, lhs_loc, rhs_loc, used_registers);
+            return Ok((lhs_ins, lhs_loc, rhs_loc, used_registers));
         }
     }
 
@@ -340,14 +362,14 @@ fn gen_pre_op(
         },
     };
 
-    (lhs_ins, new_lhs_loc, rhs_loc, used_registers)
+    Ok((lhs_ins, new_lhs_loc, rhs_loc, used_registers))
 }
 
 fn gen_op(
     c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr
-) -> (LinkedList<String>, Loc, RegSet) {
+) -> Result<(LinkedList<String>, Loc, RegSet), GenErr> {
     let (mut instructions, lhs_loc, rhs_loc, mut used_registers) =
-        gen_pre_op(c, lhs, rhs);
+        gen_pre_op(c, lhs, rhs)?;
 
     // Run the command!
     let (mut op_ins, op_loc, op_registers) =
@@ -356,14 +378,15 @@ fn gen_op(
     instructions.append(&mut op_ins);
     used_registers = used_registers.union(op_registers);
 
-    (instructions, op_loc, used_registers)
+    Ok((instructions, op_loc, used_registers))
 }
 
 fn gen_syscall(
-    c: &FunContext, params: &Vec<Expr>
-) -> (LinkedList<String>, Loc, RegSet) {
+    c: &FunContext, pos: &Pos, params: &Vec<Expr>
+) -> Result<(LinkedList<String>, Loc, RegSet), GenErr> {
     if params.len() == 0 || params.len() > 7 {
-        panic!("syscall() must take between 1-7 arguments");
+        return GenErr::err(pos, format!(
+            "syscall() must take between 1-7 arguments"));
     }
 
     let mut instructions = ll!();
@@ -371,7 +394,7 @@ fn gen_syscall(
 
     for param in params.iter().rev() {
         let (mut param_inst, param_loc, param_used_reg) =
-            gen_expr(c, &param);
+            gen_expr(c, &param)?;
 
         instructions.append(&mut param_inst);
 
@@ -389,26 +412,29 @@ fn gen_syscall(
 
     instructions.push_back(format!("syscall"));
 
-    (instructions, Loc::Register(Reg::Rax), used_registers)
+    Ok((instructions, Loc::Register(Reg::Rax), used_registers))
 }
 
 fn gen_call(
-    c: &FunContext, name: &String, params: &Vec<Expr>
-) -> (LinkedList<String>, Loc, RegSet) {
+    c: &FunContext, pos: &Pos, name: &String, params: &Vec<Expr>
+) -> Result<(LinkedList<String>, Loc, RegSet), GenErr> {
     if name == "syscall" {
-        return gen_syscall(c, params);
+        return gen_syscall(c, pos, params);
     }
 
     match c.find_in_scope(name) {
         Some(ScopeEntry::Fun(arg_num)) => {
             if params.len() != *arg_num {
-                panic!("{} must accept {} arguments", name, arg_num);
+                return GenErr::err(pos, format!(
+                    "{} must accept {} arguments", name, arg_num));
             }
         },
         Some(ScopeEntry::Var(_)) => {
-            panic!("{} is not a function", name);
+            return GenErr::err(pos, format!(
+                "{} is not a function", name));
         },
-        None => panic!("{} not in scope", name),
+        None => return GenErr::err(pos, format!(
+            "{} not in scope", name)),
     }
 
     let mut instructions = ll!();
@@ -417,7 +443,7 @@ fn gen_call(
     // Since the 7th+ params have to be on the stack anyways
     for i in (6..params.len()).rev() {
         let param = &params[i];
-        let (mut param_instructions, param_loc, _) = gen_expr(c, param);
+        let (mut param_instructions, param_loc, _) = gen_expr(c, param)?;
         instructions.append(&mut param_instructions);
         instructions.push_back(format!("pushq {}", param_loc));
     }
@@ -426,7 +452,7 @@ fn gen_call(
 
     for i in 0..std::cmp::min(6, params.len()) {
         let param = &params[i];
-        let (mut param_instructions, param_loc, _) = gen_expr(c, param);
+        let (mut param_instructions, param_loc, _) = gen_expr(c, param)?;
         instructions.append(&mut param_instructions);
 
         if param_loc.is_reg() {
@@ -454,12 +480,12 @@ fn gen_call(
     }
 
     // Assume we used all the registers, since we're calling an unknown function
-    (instructions, Loc::Register(Reg::Rax), RegSet::usable_caller_save())
+    Ok((instructions, Loc::Register(Reg::Rax), RegSet::usable_caller_save()))
 }
 
 fn gen_reference(
-    c: &FunContext, name: &String
-) -> (LinkedList<String>, Loc, RegSet) {
+    c: &FunContext, pos: &Pos, name: &String
+) -> Result<(LinkedList<String>, Loc, RegSet), GenErr> {
     match c.find_in_scope(name) {
         Some(ScopeEntry::Var(Loc::Stack(offset))) => {
             let dest_reg = Reg::Rax;
@@ -473,20 +499,21 @@ fn gen_reference(
                     "addq ${},%{}", 8 * offset, dest_reg));
             }
 
-            (instructions, Loc::Register(dest_reg), RegSet::of(dest_reg))
+            Ok((instructions, Loc::Register(dest_reg), RegSet::of(dest_reg)))
         },
-        Some(ScopeEntry::Var(other)) =>
-            panic!("Variable cannot be at {:?}!", other),
-        Some(ScopeEntry::Fun(_)) =>
-            panic!("Cannot reference a function (yet) {}", name),
-        None => panic!("{} not in scope", name),
+        Some(ScopeEntry::Var(other)) => GenErr::err(pos, format!(
+            "Variable cannot be at {:?}!", other)),
+        Some(ScopeEntry::Fun(_)) => GenErr::err(pos, format!(
+            "Cannot reference a function (yet) {}", name)),
+        None => GenErr::err(pos, format!(
+            "{} not in scope", name)),
     }
 }
 
 fn gen_dereference(
     c: &FunContext, expr: &Expr
-) -> (LinkedList<String>, Loc, RegSet) {
-    let (mut instructions, target_loc, mut used_registers) = gen_expr(c, expr);
+) -> Result<(LinkedList<String>, Loc, RegSet), GenErr> {
+    let (mut instructions, target_loc, mut used_registers) = gen_expr(c, expr)?;
 
     let dest_reg = match used_registers.first() {
         Some(reg) => reg,
@@ -499,17 +526,17 @@ fn gen_dereference(
     instructions.push_back(format!("movq {},%{}", target_loc, dest_reg));
     instructions.push_back(format!("movq (%{}),%{}", dest_reg, dest_reg));
 
-    (instructions, Loc::Register(dest_reg), used_registers)
+    Ok((instructions, Loc::Register(dest_reg), used_registers))
 }
 
 // Generates the RHS instructions for an assignment
 fn gen_expr_ass_rhs(
     c: &FunContext, rhs: &Expr
-) -> (LinkedList<String>, Reg, RegSet) {
-    let (mut instructions, rhs_loc, mut used_registers) = gen_expr(c, rhs);
+) -> Result<(LinkedList<String>, Reg, RegSet), GenErr> {
+    let (mut instructions, rhs_loc, mut used_registers) = gen_expr(c, rhs)?;
 
     match rhs_loc {
-        Loc::Register(reg) => (instructions, reg, used_registers),
+        Loc::Register(reg) => Ok((instructions, reg, used_registers)),
         // Because we can't movq from memory to memory
         rhs_loc => {
             // Reuse a register if possible
@@ -522,37 +549,35 @@ fn gen_expr_ass_rhs(
             };
 
             instructions.push_back(format!("movq {},%{}", rhs_loc, rhs_reg));
-            (instructions, rhs_reg, used_registers)
+            Ok((instructions, rhs_reg, used_registers))
         },
     }
 }
 
 fn gen_expr_ass(
-    c: &FunContext, lhs_name: &String, rhs: &Expr
-) -> (LinkedList<String>, Loc, RegSet) {
+    c: &FunContext, pos: &Pos, lhs_name: &String, rhs: &Expr
+) -> Result<(LinkedList<String>, Loc, RegSet), GenErr> {
     let (mut instructions, rhs_reg, used_registers) =
-        gen_expr_ass_rhs(c, rhs);
+        gen_expr_ass_rhs(c, rhs)?;
 
     match c.find_in_scope(lhs_name) {
         Some(ScopeEntry::Var(lhs_loc)) => {
             instructions.push_back(format!("movq %{},{}", rhs_reg, lhs_loc));
-            (instructions, lhs_loc.clone(), used_registers)
+            Ok((instructions, lhs_loc.clone(), used_registers))
         },
-        Some(ScopeEntry::Fun(_)) => {
-            panic!("Cannot reassign a function");
-        },
-        None => {
-            panic!("Variable {} not in scope", lhs_name)
-        },
+        Some(ScopeEntry::Fun(_)) => 
+            GenErr::err(pos, format!("Cannot reassign a function")),
+        None =>
+            GenErr::err(pos, format!("Variable {} not in scope", lhs_name)),
     }
 }
 
 // FIXME: This register assignment technique is super similar in other places
 fn gen_expr_deref_ass(
     c: &FunContext, lhs: &Expr, rhs: &Expr
-) -> (LinkedList<String>, Loc, RegSet) {
-    let (mut instructions, lhs_loc, mut used_registers) = gen_expr(c, lhs);
-    let (mut rhs_inst, rhs_reg, rhs_used) = gen_expr_ass_rhs(c, rhs);
+) -> Result<(LinkedList<String>, Loc, RegSet), GenErr> {
+    let (mut instructions, lhs_loc, mut used_registers) = gen_expr(c, lhs)?;
+    let (mut rhs_inst, rhs_reg, rhs_used) = gen_expr_ass_rhs(c, rhs)?;
     let safe_registers = get_safe_registers(rhs_used.clone());
 
     let lhs_dest_reg = match safe_registers.first() {
@@ -598,7 +623,7 @@ fn gen_expr_deref_ass(
 
     instructions.push_back(format!("movq %{},(%{})", rhs_reg, dest_reg));
 
-    (instructions, Loc::Register(rhs_reg), used_registers)
+    Ok((instructions, Loc::Register(rhs_reg), used_registers))
 }
 
 fn gen_int(signed: i64) -> (LinkedList<String>, Loc, RegSet) {
@@ -625,29 +650,35 @@ fn gen_int(signed: i64) -> (LinkedList<String>, Loc, RegSet) {
 /**
  * @return (instructions, location, used_registers)
  */
-fn gen_expr(c: &FunContext, expr: &Expr) -> (LinkedList<String>, Loc, RegSet) {
+fn gen_expr(
+    c: &FunContext, expr: &Expr
+) -> Result<(LinkedList<String>, Loc, RegSet), GenErr> {
     match expr {
-        Expr::Int(value) => gen_int(*value),
-        Expr::Id(name) => {
+        Expr::Int(_, value) => Ok(gen_int(*value)),
+        Expr::Id(pos, name) => {
             match c.find_in_scope(name) {
                 Some(ScopeEntry::Var(loc)) =>
-                    (ll!(), loc.clone(), RegSet::empty()),
+                    Ok((ll!(), loc.clone(), RegSet::empty())),
                 Some(ScopeEntry::Fun(_)) =>
-                    panic!("{} is a function, and can only be called", name),
-                None => panic!("Variable {} not in scope", name),
+                    GenErr::err(pos, format!(
+                        "{} is a function, and can only be called", name)),
+                None => GenErr::err(pos, format!(
+                    "Variable {} not in scope", name)),
             }
         },
-        Expr::Assignment(lhs, rhs)      => gen_expr_ass(c, lhs, rhs),
-        Expr::DerefAssignment(lhs, rhs) => gen_expr_deref_ass(c, lhs, rhs),
-        Expr::Operator(op, lhs, rhs)    => gen_op(c, op, lhs, rhs),
-        Expr::Call(name, params)        => gen_call(c, name, params),
-        Expr::Reference(name)           => gen_reference(c, name),
-        Expr::Dereference(expr)         => gen_dereference(c, expr),
+        Expr::Assignment(pos, lhs, rhs)    => gen_expr_ass(c, pos, lhs, rhs),
+        Expr::DerefAssignment(_, lhs, rhs) => gen_expr_deref_ass(c, lhs, rhs),
+        Expr::Operator(_, op, lhs, rhs)    => gen_op(c, op, lhs, rhs),
+        Expr::Call(pos, name, params)      => gen_call(c, pos, name, params),
+        Expr::Reference(pos, name)         => gen_reference(c, pos, name),
+        Expr::Dereference(_, expr)         => gen_dereference(c, expr),
     }
 }
 
-fn gen_return_expr(c: &FunContext, expr: &Expr) -> LinkedList<String> {
-    let (mut instructions, loc, _) = gen_expr(c, &expr);
+fn gen_return_expr(
+    c: &FunContext, expr: &Expr
+) -> Result<LinkedList<String>, GenErr> {
+    let (mut instructions, loc, _) = gen_expr(c, &expr)?;
 
     // If the location is already rax, we don't need to move!
     if loc != Loc::Register(Reg::Rax) {
@@ -656,7 +687,7 @@ fn gen_return_expr(c: &FunContext, expr: &Expr) -> LinkedList<String> {
 
     instructions.push_back("leave".to_string());
     instructions.push_back("ret".to_string());
-    instructions
+    Ok(instructions)
 }
 
 fn gen_return() -> LinkedList<String> {
@@ -671,37 +702,37 @@ fn gen_cond_cmp(
     lhs: &Expr,
     rhs: &Expr,
     end_label: &String
-) -> LinkedList<String> {
-    let (mut instructions, lhs_loc, rhs_loc, _) = gen_pre_op(c, lhs, rhs);
+) -> Result<LinkedList<String>, GenErr> {
+    let (mut instructions, lhs_loc, rhs_loc, _) = gen_pre_op(c, lhs, rhs)?;
     instructions.push_back(format!("cmpq {},{}", rhs_loc, lhs_loc));
     instructions.push_back(format!("{} {}", jump_command, end_label));
-    instructions
+    Ok(instructions)
 }
 
 fn gen_cond(
     c: &mut FunContext,
     cond: &Expr,
     end_label: &String
-) -> LinkedList<String> {
+) -> Result<LinkedList<String>, GenErr> {
     match cond {
-        Expr::Operator(Op::Eq, lhs, rhs) =>
+        Expr::Operator(_, Op::Eq, lhs, rhs) =>
             gen_cond_cmp(c, "jne", lhs, rhs, end_label),
-        Expr::Operator(Op::Ne, lhs, rhs) =>
+        Expr::Operator(_, Op::Ne, lhs, rhs) =>
             gen_cond_cmp(c, "je", lhs, rhs, end_label),
-        Expr::Operator(Op::Gt, lhs, rhs) =>
+        Expr::Operator(_, Op::Gt, lhs, rhs) =>
             gen_cond_cmp(c, "jle", lhs, rhs, end_label),
-        Expr::Operator(Op::Ge, lhs, rhs) =>
+        Expr::Operator(_, Op::Ge, lhs, rhs) =>
             gen_cond_cmp(c, "jl", lhs, rhs, end_label),
-        Expr::Operator(Op::Lt, lhs, rhs) =>
+        Expr::Operator(_, Op::Lt, lhs, rhs) =>
             gen_cond_cmp(c, "jge", lhs, rhs, end_label),
-        Expr::Operator(Op::Le, lhs, rhs) =>
+        Expr::Operator(_, Op::Le, lhs, rhs) =>
             gen_cond_cmp(c, "jg", lhs, rhs, end_label),
         _ => {
             // Fallback to evaluating the entire conditional expression
-            let (mut instructions, cond_loc, _) = gen_expr(c, cond);
+            let (mut instructions, cond_loc, _) = gen_expr(c, cond)?;
             instructions.push_back(format!("cmpq $0,{}", cond_loc));
             instructions.push_back(format!("jz {}", end_label));
-            instructions
+            Ok(instructions)
         },
     }
 }
@@ -710,19 +741,19 @@ fn gen_if(
     c: &mut FunContext,
     cond: &Expr,
     if_body: &Statement
-) -> LinkedList<String> {
+) -> Result<LinkedList<String>, GenErr> {
     let if_end_label = c.new_label("IF_END");
-    let mut instructions = gen_cond(c, cond, &if_end_label);
-    instructions.append(&mut gen_statement(c, if_body));
+    let mut instructions = gen_cond(c, cond, &if_end_label)?;
+    instructions.append(&mut gen_statement(c, if_body)?);
     instructions.push_back(format!("{}:", if_end_label));
-    instructions
+    Ok(instructions)
 }
 
 fn gen_while(
     c: &mut FunContext,
     cond: &Expr,
     body: &Statement
-) -> LinkedList<String> {
+) -> Result<LinkedList<String>, GenErr> {
     let mut instructions = ll!();
     let while_begin_label = c.new_label("WHILE_BEGIN");
     instructions.push_back(format!("{}:", while_begin_label));
@@ -730,14 +761,14 @@ fn gen_while(
 
     c.break_dest_stack.push(while_end_label.clone());
 
-    instructions.append(&mut gen_cond(c, cond, &while_end_label));
-    instructions.append(&mut gen_statement(c, body));
+    instructions.append(&mut gen_cond(c, cond, &while_end_label)?);
+    instructions.append(&mut gen_statement(c, body)?);
     instructions.push_back(format!("jmp {}", while_begin_label));
     instructions.push_back(format!("{}:", while_end_label));
 
     c.break_dest_stack.pop();
 
-    instructions
+    Ok(instructions)
 }
 
 fn gen_if_else(
@@ -745,24 +776,26 @@ fn gen_if_else(
     cond: &Expr,
     if_body: &Statement,
     else_body: &Statement,
-) -> LinkedList<String> {
+) -> Result<LinkedList<String>, GenErr> {
     let if_end_label = c.new_label("IF_END");
     let else_end_label = c.new_label("ELSE_END");
-    let mut instructions = gen_cond(c, cond, &if_end_label);
-    instructions.append(&mut gen_statement(c, if_body));
+    let mut instructions = gen_cond(c, cond, &if_end_label)?;
+    instructions.append(&mut gen_statement(c, if_body)?);
     instructions.push_back(format!("jmp {}", else_end_label));
     instructions.push_back(format!("{}:", if_end_label));
-    instructions.append(&mut gen_statement(c, else_body));
+    instructions.append(&mut gen_statement(c, else_body)?);
     instructions.push_back(format!("{}:", else_end_label));
-    instructions
+    Ok(instructions)
 }
 
-fn gen_auto(c: &mut FunContext, vars: &Vec<Var>) -> LinkedList<String> {
+fn gen_auto(
+    c: &mut FunContext, pos: &Pos, vars: &Vec<Var>
+) -> Result<LinkedList<String>, GenErr> {
     let mut instructions = ll!();
     for var in vars {
         // Guaranteed to exist because of the prepass
         let loc = c.local_var_locs.get(var.name()).unwrap().clone();
-        c.add_to_scope(var.name().clone(), ScopeEntry::Var(loc.clone()));
+        c.add_to_scope(pos, var.name().clone(), ScopeEntry::Var(loc.clone()))?;
 
         if let Var::Vec(_, size) = var {
             // The first value in the stack for a vector is a data pointer
@@ -770,62 +803,71 @@ fn gen_auto(c: &mut FunContext, vars: &Vec<Var>) -> LinkedList<String> {
             instructions.push_back(format!("addq ${},{}", size * 8, loc));
         }
     }
-    instructions
+    Ok(instructions)
 }
 
-fn gen_extern(c: &mut FunContext, vars: &Vec<String>) -> LinkedList<String> {
+fn gen_extern(
+    c: &mut FunContext, pos: &Pos, vars: &Vec<String>
+) -> Result<LinkedList<String>, GenErr> {
     for name in vars {
         if !c.find_in_scope(name).is_none() {
-            panic!("{} is already is scope", name);
+            return GenErr::err(pos, format!(
+                "{} is already is scope", name));
         }
 
         match c.global_scope.get(name) {
             Some(ScopeEntry::Var(Loc::Data(_))) => {
-                c.add_to_scope(name.clone(),
-                               ScopeEntry::Var(Loc::Data(name.clone())));
+                let entry = ScopeEntry::Var(Loc::Data(name.clone()));
+                c.add_to_scope(pos, name.clone(), entry)?;
             },
-            Some(ScopeEntry::Fun(_)) =>
-                panic!("{} is a function, not a global var", name),
-            _ => panic!("Could not find definition for {}", name),
+            Some(ScopeEntry::Fun(_)) => return GenErr::err(pos, format!(
+                "{} is a function, not a global var", name)),
+            _ => return GenErr::err(pos, format!(
+                "Could not find definition for {}", name)),
         }
     }
 
-    ll!()
+    Ok(ll!())
 }
 
 // Returns true if the last statement is a return
-fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
+fn gen_statement(
+    c: &mut FunContext, body: &Statement
+) -> Result<LinkedList<String>, GenErr> {
     match body {
-        Statement::Null => ll!(),
-        Statement::Break => {
+        Statement::Null => Ok(ll!()),
+        Statement::Break(pos) => {
             match c.break_dest_stack.last() {
-                Some(label) => ll!(format!("jmp {}", label)),
-                None => panic!("Cannot break from this location"),
+                Some(label) => Ok(ll!(format!("jmp {}", label))),
+                None => GenErr::err(pos, format!(
+                    "Cannot break from this location")),
             }
         },
-        Statement::Goto(name) => {
+        Statement::Goto(pos, name) => {
             match c.labels.get(name) {
-                Some(label) => ll!(format!("jmp {}", label)),
-                None => panic!("Label '{}' not defined in this function", name),
+                Some(label) => Ok(ll!(format!("jmp {}", label))),
+                None =>
+                    GenErr::err(pos, format!(
+                        "Label '{}' not defined in this function", name)),
             }
         },
         // We preprocess the labels, so we know it must exist
-        Statement::Label(name) =>
-            ll!(format!("{}:", c.labels.get(name).unwrap())),
-        Statement::Return => gen_return(),
+        Statement::Label(_, name) =>
+            Ok(ll!(format!("{}:", c.labels.get(name).unwrap()))),
+        Statement::Return => Ok(gen_return()),
         Statement::ReturnExpr(expr) => gen_return_expr(c, expr),
         Statement::Block(statements) => {
             c.new_scope();
             let mut instructions = ll!();
             for statement in statements {
-                instructions.append(&mut gen_statement(c, statement))
+                instructions.append(&mut gen_statement(c, statement)?)
             }
             c.drop_scope();
-            instructions
+            Ok(instructions)
         },
-        Statement::Auto(vars)              => gen_auto(c, vars),
-        Statement::Extern(vars)            => gen_extern(c, vars),
-        Statement::Expr(expr)              => gen_expr(c, expr).0,
+        Statement::Auto(pos, vars)         => gen_auto(c, pos, vars),
+        Statement::Extern(pos, vars)       => gen_extern(c, pos, vars),
+        Statement::Expr(expr)              => Ok(gen_expr(c, expr)?.0),
         Statement::If(cond, if_body, None) => gen_if(c, cond, if_body),
         Statement::While(cond, body)       => gen_while(c, cond, body),
         Statement::If(cond, if_body, Some(else_body)) =>
@@ -834,20 +876,20 @@ fn gen_statement(c: &mut FunContext, body: &Statement) -> LinkedList<String> {
 }
 
 fn gen_fun(
-    c: &mut FunContext, args: Vec<String>, body: Statement
-) -> LinkedList<String> {
+    c: &mut FunContext, pos: &Pos, args: Vec<String>, body: Statement
+) -> Result<LinkedList<String>, GenErr> {
     c.new_scope();
     // Save base pointer, since it's callee-saved
     let mut instructions = ll!(format!("pushq %rbp"),
                                format!("movq %rsp,%rbp"));
 
     // Prepare initial stack memory
-    instructions.append(&mut alloc_args(c, &args));
+    instructions.append(&mut alloc_args(c, pos, &args)?);
     instructions.append(
-        &mut prepass_gen(c, &body, 1 + std::cmp::min(6, args.len() as i64))
+        &mut prepass_gen(c, &body, 1 + std::cmp::min(6, args.len() as i64))?
     );
 
-    instructions.append(&mut gen_statement(c, &body));
+    instructions.append(&mut gen_statement(c, &body)?);
 
     let trailing_ret = match instructions.back() {
         Some(instruction) => instruction == "ret",
@@ -859,29 +901,31 @@ fn gen_fun(
     }
 
     c.drop_scope();
-    instructions
+    Ok(instructions)
 }
 
 // Prepass to find the global scope, before we start evaluating things
 fn root_prepass(
     statements: &Vec<RootStatement>
-) -> (HashMap<String, ScopeEntry>, Vec<&Var>) {
+) -> Result<(HashMap<String, ScopeEntry>, Vec<&Var>), GenErr> {
     let mut scope = HashMap::new();
     let mut root_vars = Vec::<&Var>::new();
 
     for statement in statements {
         match statement {
-            RootStatement::Function(name, args, _) => {
+            RootStatement::Function(pos, name, args, _) => {
                 if scope.contains_key(name) {
-                    panic!("{} already in root scope", name);
+                    return GenErr::err(
+                        pos, format!("{} already in root scope", name));
                 }
 
                 scope.insert(name.clone(), ScopeEntry::Fun(args.len()));
             },
-            RootStatement::Variable(var) => {
+            RootStatement::Variable(pos, var) => {
                 let name = var.name();
                 if scope.contains_key(name) {
-                    panic!("{} already in root scope", name);
+                    return GenErr::err(
+                        pos, format!("{} already in root scope", name));
                 }
                 root_vars.push(var);
 
@@ -890,7 +934,7 @@ fn root_prepass(
             },
         }
     }
-    (scope, root_vars)
+    Ok((scope, root_vars))
 }
 
 fn generate_data_segment(root_vars: &Vec<&Var>, w: &mut dyn Write) {
@@ -934,10 +978,12 @@ fn generate_entry(root_vars: &Vec<&Var>, w: &mut dyn Write) {
     }
 }
 
-pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
+fn gen(
+    statements: Vec<RootStatement>, writer: &mut dyn Write
+) -> Result<(), GenErr> {
     let mut w = BufWriter::new(writer);
 
-    let (global_scope, root_vars) = root_prepass(&statements);
+    let (global_scope, root_vars) = root_prepass(&statements)?;
 
     generate_data_segment(&root_vars, &mut w);
     generate_entry(&root_vars, &mut w);
@@ -946,7 +992,7 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
 
     for statement in statements {
         match statement {
-            RootStatement::Function(name, args, body) => {
+            RootStatement::Function(pos, name, args, body) => {
                 let mut c = FunContext {
                     global_scope: &global_scope,
                     fun_scope: HashMap::new(),
@@ -957,7 +1003,7 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
                     break_dest_stack: vec!(),
                 };
 
-                let instructions = gen_fun(&mut c, args, body);
+                let instructions = gen_fun(&mut c, &pos, args, body)?;
                 writeln!(w, "{}:", name)
                     .expect("Failed writing to output");
                 for instruction in instructions {
@@ -968,7 +1014,18 @@ pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
                 label_counter = c.label_counter;
             },
             // Vars are generated in the prepass
-            RootStatement::Variable(_) => {},
+            RootStatement::Variable(_, _) => {},
         }
+    }
+
+    Ok(())
+}
+
+pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
+    match gen(statements, writer) {
+        Ok(_) => {},
+        Err(GenErr { pos, message }) => {
+            panic!("{} at {:?}", message, pos)
+        },
     }
 }
