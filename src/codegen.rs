@@ -3,6 +3,7 @@ use std::collections::LinkedList;
 use std::io::BufWriter;
 use std::io::Write;
 
+use crate::parser::*;
 use crate::ast::*;
 use crate::memory::*;
 
@@ -816,7 +817,6 @@ fn gen_extern(
     Ok(ll!())
 }
 
-// Returns true if the last statement is a return
 fn gen_statement(
     c: &mut FunContext, body: &Statement
 ) -> Result<LinkedList<String>, CompErr> {
@@ -862,7 +862,7 @@ fn gen_statement(
 }
 
 fn gen_fun(
-    c: &mut FunContext, pos: &Pos, args: Vec<String>, body: Statement
+    c: &mut FunContext, pos: &Pos, args: &Vec<String>, body: &Statement
 ) -> Result<LinkedList<String>, CompErr> {
     c.new_scope();
     // Save base pointer, since it's callee-saved
@@ -965,7 +965,7 @@ fn generate_entry(root_vars: &Vec<&Var>, w: &mut dyn Write) {
 }
 
 fn gen(
-    statements: Vec<RootStatement>, writer: &mut dyn Write
+    statements: &Vec<RootStatement>, writer: &mut dyn Write
 ) -> Result<(), CompErr> {
     let mut w = BufWriter::new(writer);
 
@@ -1007,11 +1007,12 @@ fn gen(
     Ok(())
 }
 
-pub fn generate(statements: Vec<RootStatement>, writer: &mut dyn Write) {
-    match gen(statements, writer) {
+pub fn generate(parse_result: &ParseResult, writer: &mut dyn Write) {
+    match gen(&parse_result.root_statements, writer) {
         Ok(_) => {},
-        Err(CompErr { pos, message }) => {
-            panic!("{} at {:?}", message, pos)
+        Err(err) => {
+            print_comp_error(parse_result, &err);
+            std::process::exit(1);
         },
     }
 }

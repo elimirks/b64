@@ -40,7 +40,7 @@ fn main() {
 
     if opts.no_bin {
         let mut stdout = io::stdout();
-        generate(parse_result.root_statements, &mut stdout);
+        generate(&parse_result, &mut stdout);
     } else {
         let tmp_obj_path = "/tmp/b64.o";
 
@@ -52,7 +52,7 @@ fn main() {
             .expect("Failed running the GNU Assembler");
 
         // Stream the assembly code straight into GNU assembler
-        generate(parse_result.root_statements, &mut as_process.stdin.as_ref().unwrap());
+        generate(&parse_result, &mut as_process.stdin.as_ref().unwrap());
 
         match as_process.wait() {
             Ok(status) => if !status.success() {

@@ -132,10 +132,10 @@ fn parse_statement(c: &mut ParseContext) -> Result<Statement, CompErr> {
 
     match tok {
         Token::Return      => parse_statement_return(c),
-        Token::Break       => parse_statement_break(c),
+        Token::Break       => parse_statement_break(c, pos),
         Token::LBrace      => parse_statement_block(c),
-        Token::Auto        => parse_statement_auto(c),
-        Token::Extern      => parse_statement_extern(c),
+        Token::Auto        => parse_statement_auto(c, pos),
+        Token::Extern      => parse_statement_extern(c, pos),
         Token::If          => parse_statement_if(c),
         Token::While       => parse_statement_while(c),
         Token::Semicolon   => Ok(Statement::Null),
@@ -173,8 +173,9 @@ fn parse_auto_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> 
 
 // TODO: This loop delim technique is used in multiple places. Abstract away!
 // Expects opening `extrn` to have been parsed
-fn parse_statement_extern(c: &mut ParseContext) -> Result<Statement, CompErr> {
-    let pos = c.pos();
+fn parse_statement_extern(
+    c: &mut ParseContext, pos: Pos
+) -> Result<Statement, CompErr> {
     let mut ids = Vec::<String>::new();
     let mut should_parse_param = true;
 
@@ -208,8 +209,9 @@ fn parse_statement_extern(c: &mut ParseContext) -> Result<Statement, CompErr> {
 }
 
 // Expects opening `auto` to have been parsed
-fn parse_statement_auto(c: &mut ParseContext) -> Result<Statement, CompErr> {
-    let pos = c.pos();
+fn parse_statement_auto(
+    c: &mut ParseContext, pos: Pos
+) -> Result<Statement, CompErr> {
     let mut vars = Vec::<Var>::new();
     let mut should_parse_param = true;
 
@@ -306,8 +308,9 @@ fn parse_statement_block(c: &mut ParseContext) -> Result<Statement, CompErr> {
 }
 
 // Expects the `break` keyword to have been parsed already
-fn parse_statement_break(c: &mut ParseContext) -> Result<Statement, CompErr> {
-    let pos = c.pos();
+fn parse_statement_break(
+    c: &mut ParseContext, pos: Pos
+) -> Result<Statement, CompErr> {
     parse_tok(c, Token::Semicolon)?;
     Ok(Statement::Break(pos))
 }
@@ -389,12 +392,12 @@ fn chain_expr(c: &mut ParseContext, lhs: Expr, op: Op) -> Result<Expr, CompErr> 
 }
 
 fn parse_expr_id_unchained(
-    c: &mut ParseContext, id: String
+    c: &mut ParseContext, fun_id_pos: Pos, id: String
 ) -> Result<Expr, CompErr> {
     let (pos, tok) = pop_tok(c)?;
     match tok {
         Token::LParen => {
-            parse_expr_call(c, id)
+            parse_expr_call(c, fun_id_pos, id)
         },
         // Handle vector index sugar syntax
         Token::LBracket => {
@@ -427,7 +430,7 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
     let (pos, tok) = pop_tok(c)?;
 
     match tok {
-        Token::Id(id) => parse_expr_id_unchained(c, id),
+        Token::Id(id) => parse_expr_id_unchained(c, pos, id),
         Token::Value(value) => Ok(Expr::Int(pos, value)),
         Token::Ampersand => match pop_tok(c)? {
             (pos, Token::Id(id)) => Ok(Expr::Reference(pos, id)),
@@ -447,11 +450,12 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
 }
 
 // Assumes the rparen has already been parsed
-fn parse_expr_call(c: &mut ParseContext, name: String) -> Result<Expr, CompErr> {
+fn parse_expr_call(
+    c: &mut ParseContext, fun_id_pos: Pos, name: String
+) -> Result<Expr, CompErr> {
     let mut params = Vec::<Expr>::new();
     // To alternate between comma & arg parsing
     let mut should_parse_param = true;
-    let pos = c.pos();
 
     // Parse args and closing paren
     loop {
@@ -478,7 +482,7 @@ fn parse_expr_call(c: &mut ParseContext, name: String) -> Result<Expr, CompErr> 
         }
     }
 
-    Ok(Expr::Call(pos, name, params))
+    Ok(Expr::Call(fun_id_pos, name, params))
 }
 
 /**
@@ -518,7 +522,7 @@ pub fn print_comp_error(parse_result: &ParseResult, err: &CompErr) {
 
     let (line, row, col) = get_parse_position(
         &content.chars().collect(), err.pos.offset);
-    println!("Parse error: {}", err.message);
+    println!("Compile error: {}", err.message);
     println!("In file: {}", file_name);
 
     let prefix = format!("{} |", row);
