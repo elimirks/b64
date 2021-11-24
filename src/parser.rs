@@ -504,21 +504,26 @@ fn get_parse_position(content: &Vec<char>, offset: usize) -> (String, usize, usi
 }
 
 pub fn print_comp_error(parse_result: &ParseResult, err: &CompErr) {
-    let (file_name, content) = &parse_result.file_contents[err.pos.file_id];
-
-    let (line, row, col) = get_parse_position(
-        &content.chars().collect(), err.pos.offset);
     println!("Compile error: {}", err.message);
-    println!("In file: {}", file_name);
+    match &err.pos {
+        Some(pos) => {
+            let (file_name, content) = &parse_result.file_contents[pos.file_id];
+            println!("In file: {}", file_name);
 
-    let prefix = format!("{} |", row);
-    println!("{}{}", prefix, line);
+            let (line, row, col) = get_parse_position(
+                &content.chars().collect(), pos.offset);
 
-    for _ in 0..col + prefix.len() {
-        print!(" ");
+            let prefix = format!("{} |", row);
+            println!("{}{}", prefix, line);
+
+            for _ in 0..col + prefix.len() {
+                print!(" ");
+            }
+
+            println!("^")
+        },
+        None => {},
     }
-
-    println!("^")
 }
 
 fn parse_content(file_id: usize, content: &String) -> Result<Vec<RootStatement>, CompErr> {

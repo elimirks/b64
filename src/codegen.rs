@@ -781,23 +781,20 @@ fn gen_auto(
     let mut instructions = ll!();
     for var in vars {
         // Guaranteed to exist because of the prepass
-        let dest_log = c.local_var_locs.get(var.name()).unwrap().clone();
-        c.add_to_scope(pos, var.name().clone(), ScopeEntry::Var(dest_log.clone()))?;
+        let dest_loc = c.local_var_locs.get(var.name()).unwrap().clone();
+        c.add_to_scope(pos, var.name().clone(), ScopeEntry::Var(dest_loc.clone()))?;
 
         match var {
             Var::Vec(_, size) => {
                 // The first value in the stack for a vector is a data pointer
-                // TODO: Use leaq instead
-                instructions.push_back(format!(
-                    "movq %rbp,{}", dest_log));
-                instructions.push_back(format!(
-                    "addq ${},{}", size * 8, dest_log));
+                instructions.push_back(format!("leaq {}(%rbp),%rax", size * 8));
+                instructions.push_back(format!("movq %rax,{}", dest_loc));
             },
             Var::Single(_, Some(value)) => {
                 let (mut val_inst, val_loc, _) = gen_int(*value);
                 instructions.append(&mut val_inst);
                 instructions.push_back(format!(
-                    "movq {},{}", val_loc, dest_log));
+                    "movq {},{}", val_loc, dest_loc));
             },
             Var::Single(_, None) => {},
         }
@@ -935,61 +932,56 @@ fn root_prepass(
     Ok((scope, root_vars))
 }
 
-fn generate_data_segment(root_vars: &Vec<&Var>, w: &mut dyn Write) {
-    writeln!(w, ".data")
-        .expect("Failed writing to output");
+fn generate_data_segment(
+    root_vars: &Vec<&Var>, w: &mut dyn Write
+) -> Result<(), std::io::Error> {
+    writeln!(w, ".data")?;
     for var in root_vars {
-        let size = match var {
-            Var::Single(_, _) => 1,
-            Var::Vec(_, size) => 1 + size, // +1 for the vec pointer
-        };
-        let name = var.name();
+        write!(w, "{}:\n    ", var.name())?;
 
-        writeln!(w, "{}:\n    .skip {}", name, size * 8)
-            .expect("Failed writing to output");
+        match var {
+            Var::Single(_, None) => {
+                writeln!(w, ".skip 8")?;
+            },
+            Var::Single(_, Some(value)) => {
+                writeln!(w, ".quad {}", value)?;
+            },
+            Var::Vec(_, size) => {
+                // +1 for the vec pointer
+                writeln!(w, ".skip {}", (1 + size) * 8)?;
+            },
+        };
     }
+    Ok(())
 }
 
-fn generate_start(root_vars: &Vec<&Var>, w: &mut dyn Write) {
-    let mut start_instructions = vec!();
+fn generate_start(
+    root_vars: &Vec<&Var>, w: &mut dyn Write
+) -> Result<(), std::io::Error> {
+    writeln!(w, "{}\n{}\n{}",
+             ".text",
+             ".global _start",
+             "_start:")?;
 
     for var in root_vars {
         match var {
-            Var::Single(_, None) => {},
-            Var::Single(name, Some(value)) => {
-                // TODO: Initialize these in the data segment instead!
-                let (val_inst, val_loc, _) = gen_int(*value);
-                for inst in val_inst {
-                    start_instructions.push(inst)
-                }
-
-                start_instructions.push(format!(
-                    "movq {},{}(%rip)", val_loc, name));
-            },
+            Var::Single(_, _) => {},
             Var::Vec(name, _) => {
                 // Initialize vec pointers
                 // For consistency with stack vectors, data vectors are pointers
-                start_instructions.push(format!("leaq {}(%rip),%rax", name));
-                start_instructions.push(format!("addq $8,%rax"));
-                start_instructions.push(format!("movq %rax,{}(%rip)", name));
+                writeln!(w, "leaq {}(%rip),%rax", name)?;
+                writeln!(w, "addq $8,%rax")?;
+                writeln!(w, "movq %rax,{}(%rip)", name)?;
             }
         }
     }
 
-    start_instructions.push("call main".to_string());
-    start_instructions.push("movq %rax,%rdi".to_string());
-    start_instructions.push("movq $60,%rax".to_string());
-    start_instructions.push("syscall".to_string());
+    writeln!(w, "call main")?;
+    writeln!(w, "movq %rax,%rdi")?;
+    writeln!(w, "movq $60,%rax")?;
+    writeln!(w, "syscall")?;
 
-    writeln!(w, "{}\n{}\n{}",
-             ".text",
-             ".global _start",
-             "_start:")
-        .expect("Failed writing to output");
-    for instruction in start_instructions {
-        writeln!(w, "    {}", instruction)
-            .expect("Failed writing to output");
-    }
+    Ok(())
 }
 
 fn gen(
@@ -999,8 +991,8 @@ fn gen(
 
     let (global_scope, root_vars) = root_prepass(&statements)?;
 
-    generate_data_segment(&root_vars, &mut w);
-    generate_start(&root_vars, &mut w);
+    CompErr::from_io_res(generate_data_segment(&root_vars, &mut w))?;
+    CompErr::from_io_res(generate_start(&root_vars, &mut w))?;
 
     let mut label_counter = 0;
 
@@ -1018,11 +1010,10 @@ fn gen(
                 };
 
                 let instructions = gen_fun(&mut c, &pos, args, body)?;
-                writeln!(w, "{}:", name)
-                    .expect("Failed writing to output");
+
+                CompErr::from_io_res(writeln!(w, "{}:", name))?;
                 for instruction in instructions {
-                    writeln!(w, "    {}", instruction)
-                        .expect("Failed writing to output");
+                    CompErr::from_io_res(writeln!(w, "    {}", instruction))?;
                 }
 
                 label_counter = c.label_counter;

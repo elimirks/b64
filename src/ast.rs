@@ -14,16 +14,28 @@ impl Pos {
 }
 
 pub struct CompErr {
-    pub pos: Pos,
+    pub pos: Option<Pos>,
     pub message: String,
 }
 
 impl CompErr {
     pub fn err<T>(pos: &Pos, message: String) -> Result<T, CompErr> {
         Err(CompErr {
-            pos: pos.clone(),
+            pos: Some(pos.clone()),
             message: message,
         })
+    }
+
+    pub fn from_io_res<T>(
+        io_res: Result<T, std::io::Error>
+    ) -> Result<T, CompErr> {
+        match io_res {
+            Ok(result) => Ok(result),
+            Err(_)     => Err(CompErr {
+                pos: None,
+                message: "Failed writing to output".to_string(),
+            }),
+        }
     }
 }
 
