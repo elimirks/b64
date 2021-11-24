@@ -61,11 +61,10 @@ pub fn parse_tok(c: &mut ParseContext, expected: Token) -> Result<(), CompErr> {
 // Returns None for invalid tokens
 // Returns Token::Eof for Eof (considered a valid token)
 pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
-    if !c.next_tok.is_none() {
-        let mut temp = None;
-        std::mem::swap(&mut temp, &mut c.next_tok);
-        return Ok(temp.unwrap());
-    }
+    match c.tok_stack.pop() {
+        None => {},
+        Some(next) => return Ok(next),
+    };
 
     // Seek past useless whitespace
     consume_ws(c);
@@ -87,12 +86,7 @@ pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 }
 
 pub fn push_tok(c: &mut ParseContext, tok: (Pos, Token)) {
-    if !c.next_tok.is_none() {
-        // This is fine. We shouldn't ever have to push more than one token
-        // If more than one gets pushed, the parser is doing something silly
-        panic!("Token stack is full");
-    }
-    c.next_tok = Some(tok);
+    c.tok_stack.push(tok);
 }
 
 // Generates a symbol tokenizer match statemnt for ambiguous multi-char tokens

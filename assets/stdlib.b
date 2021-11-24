@@ -2,8 +2,7 @@
  * Returns the length of the given wide char.
  */
 charlen(c) {
-    auto len;
-    len = 0;
+    auto len 0;
     while (c) {
         c = c >> 8;
         len = len + 1;
@@ -18,6 +17,11 @@ putchar(c) {
     syscall(1, 1, &c, charlen(c));
 }
 
+/* Writes the first ASCII char of the given wide char to stdout */
+putcharSingle(c) {
+    syscall(1, 1, &c, 1);
+}
+
 /**
  * Writes the given number to stdout, in decimal form
  */
@@ -27,11 +31,11 @@ putnum(n) {
     top = numstack;
 
     if (n < 0) {
-        putchar('-');
+        putcharSingle('-');
         /* FIXME: Change to -n once unaries are supported */
         n = 0 - n;
     } else if (n == 0) {
-        putchar('0');
+        putcharSingle('0');
         return;
     }
 
@@ -43,6 +47,6 @@ putnum(n) {
 
     while (top != numstack) {
         top = top - 8;
-        putchar(*top + '0');
+        putcharSingle(*top + '0');
     }
 }

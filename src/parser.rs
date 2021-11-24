@@ -15,7 +15,7 @@ pub struct ParseContext {
     pub offset: usize,
     pub file_id: usize,
     // Used for the tokenizer stack
-    pub next_tok: Option<(Pos, Token)>,
+    pub tok_stack: Vec<(Pos, Token)>,
 }
 
 impl ParseContext {
@@ -45,27 +45,69 @@ fn parse_global_var(
     Ok(RootStatement::Variable(pos, var))
 }
 
-fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
-    let (pos, tok) = pop_tok(c)?;
+fn parse_vec_values(c: &mut ParseContext) -> Result<Vec<i64>, CompErr> {
+    let mut values = vec!();
 
-    match tok {
-       Token::LBracket => {
-            match pop_tok(c)? {
-                (_, Token::Value(max_index)) if max_index >= 0 => {
-                    parse_tok(c, Token::RBracket)?;
-                    Ok(Var::Vec(name, max_index + 1))
-                },
-                (pos, other) => {
-                    CompErr::err(&pos, format!(
-                        "Expected positive int. Found {:?}", other))
-                },
-            }
+    match pop_tok(c)? {
+        (_, Token::Value(value)) => {
+            values.push(value);
         },
-        Token::Value(value) => {
+        other => {
+            push_tok(c, other);
+            return Ok(values);
+        },
+    };
+    // At this point, we're starting at comma
+    loop {
+        match pop_tok(c)? {
+            (comma_pos, Token::Comma) => {
+                match pop_tok(c)? {
+                    (_, Token::Value(value)) => {
+                        values.push(value);
+                    },
+                    other => {
+                        // Unfortunately, B has ambiguous grammar...
+                        // So we're forced to push 2 tokens :(
+                        push_tok(c, (comma_pos, Token::Comma));
+                        push_tok(c, other);
+                        break;
+                    },
+                }
+            },
+            other => {
+                push_tok(c, other);
+                break;
+            },
+        }
+    }
+    return Ok(values);
+}
+
+fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
+    match pop_tok(c)? {
+       (_, Token::LBracket) => {
+           let given_vec_size = match pop_tok(c)? {
+               (_, Token::Value(max_index)) if max_index >= 0 => {
+                   parse_tok(c, Token::RBracket)?;
+                   max_index + 1
+               },
+               (_, Token::RBracket) => 0,
+               (pos, other) => {
+                   return CompErr::err(&pos, format!(
+                       "Expected positive int. Found {:?}", other));
+               },
+           };
+           let vec_values = parse_vec_values(c)?;
+           // According to the B spec, we choose the max of these two values for
+           // the catual vector size
+           let vec_size = std::cmp::max(given_vec_size, vec_values.len() as i64);
+           Ok(Var::Vec(name, vec_size, vec_values))
+        },
+        (_, Token::Value(value)) => {
             Ok(Var::Single(name, Some(value)))
         },
-        tok => {
-            push_tok(c, (pos, tok));
+        other => {
+            push_tok(c, other);
             Ok(Var::Single(name, None))
         },
     }
@@ -74,10 +116,9 @@ fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
 fn parse_root_statement(
     c: &mut ParseContext
 ) -> Result<Option<RootStatement>, CompErr> {
-    let (pos, tok) = pop_tok(c)?;
-    match tok {
+    match pop_tok(c)? {
         // Root statements always begin with an id
-        Token::Id(id) => {
+        (_, Token::Id(id)) => {
             let (pos, tok) = pop_tok(c)?;
 
             match tok {
@@ -91,8 +132,9 @@ fn parse_root_statement(
                 },
             }
         },
-        Token::Eof => Ok(None),
-        other => CompErr::err(&pos, format!("Expected id. {:?} found", other)),
+        (_, Token::Eof) => Ok(None),
+        (pos, tok) => CompErr::err(&pos, format!(
+            "Expected id. {:?} found", tok)),
     }
 }
 
@@ -531,7 +573,7 @@ fn parse_content(file_id: usize, content: &String) -> Result<Vec<RootStatement>,
         content: content.chars().collect(),
         offset: 0,
         file_id: file_id,
-        next_tok: None,
+        tok_stack: vec!(),
     };
 
     let mut roots = vec!();

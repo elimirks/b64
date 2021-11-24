@@ -122,8 +122,8 @@ fn prepass_gen(
                     }
 
                     let size = match var {
-                        Var::Vec(_, vec_size) => 1 + vec_size,
-                        Var::Single(_, _)     => 1,
+                        Var::Vec(_, vec_size, _) => 1 + vec_size,
+                        Var::Single(_, _)        => 1,
                     };
 
                     c.local_var_locs.insert(
@@ -560,6 +560,7 @@ fn gen_expr_ass(
 }
 
 // FIXME: This register assignment technique is super similar in other places
+// Abstract away!
 fn gen_expr_deref_ass(
     c: &FunContext, lhs: &Expr, rhs: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
@@ -785,10 +786,20 @@ fn gen_auto(
         c.add_to_scope(pos, var.name().clone(), ScopeEntry::Var(dest_loc.clone()))?;
 
         match var {
-            Var::Vec(_, size) => {
+            Var::Vec(_, size, initial) => {
                 // The first value in the stack for a vector is a data pointer
                 instructions.push_back(format!("leaq {}(%rbp),%rax", size * 8));
                 instructions.push_back(format!("movq %rax,{}", dest_loc));
+
+                for i in 0..initial.len() {
+                    let value = initial[i];
+                    let val_dest_loc = Loc::Stack(size + i as i64);
+
+                    let (mut val_inst, val_loc, _) = gen_int(value);
+                    instructions.append(&mut val_inst);
+                    instructions.push_back(format!(
+                        "movq {},{}", val_loc, val_dest_loc));
+                }
             },
             Var::Single(_, Some(value)) => {
                 let (mut val_inst, val_loc, _) = gen_int(*value);
@@ -946,9 +957,25 @@ fn generate_data_segment(
             Var::Single(_, Some(value)) => {
                 writeln!(w, ".quad {}", value)?;
             },
-            Var::Vec(_, size) => {
-                // +1 for the vec pointer
-                writeln!(w, ".skip {}", (1 + size) * 8)?;
+            Var::Vec(_, size, initial) => {
+                if initial.is_empty() {
+                    // +1 for the vec pointer
+                    writeln!(w, ".skip {}", (1 + size) * 8)?;
+                } else {
+                    // One extra at the beggining for vec pointer
+                    write!(w, ".quad 0")?;
+
+                    for i in 0..initial.len() {
+                        let value = initial[i];
+                        write!(w, ",{}", value)?;
+                    }
+
+                    // Fill the rest with zeros
+                    for _ in initial.len()..*size as usize {
+                        write!(w, ",0")?;
+                    }
+                    write!(w, "\n")?;
+                }
             },
         };
     }
@@ -966,20 +993,20 @@ fn generate_start(
     for var in root_vars {
         match var {
             Var::Single(_, _) => {},
-            Var::Vec(name, _) => {
+            Var::Vec(name, _, _) => {
                 // Initialize vec pointers
                 // For consistency with stack vectors, data vectors are pointers
-                writeln!(w, "leaq {}(%rip),%rax", name)?;
-                writeln!(w, "addq $8,%rax")?;
-                writeln!(w, "movq %rax,{}(%rip)", name)?;
+                writeln!(w, "    leaq {}(%rip),%rax", name)?;
+                writeln!(w, "    addq $8,%rax")?;
+                writeln!(w, "    movq %rax,{}(%rip)", name)?;
             }
         }
     }
 
-    writeln!(w, "call main")?;
-    writeln!(w, "movq %rax,%rdi")?;
-    writeln!(w, "movq $60,%rax")?;
-    writeln!(w, "syscall")?;
+    writeln!(w, "    call main")?;
+    writeln!(w, "    movq %rax,%rdi")?;
+    writeln!(w, "    movq $60,%rax")?;
+    writeln!(w, "    syscall")?;
 
     Ok(())
 }

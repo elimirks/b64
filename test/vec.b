@@ -1,10 +1,9 @@
 main() {
-    auto nums[3];
-    nums[0] = 2;
+    auto nums[2] 2;
     *(nums + 8) = 3;
     nums[2] = 5;
 
-    putnum(*nums);
+    putnum(*nums); /* Should print 2 */
     putchar('*n');
     putnum(*(nums + 8));
     putchar('*n');

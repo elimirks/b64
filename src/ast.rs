@@ -67,15 +67,16 @@ pub enum Statement {
 }
 
 #[derive(Debug)]
+// Singles & Vecs may have optional initial values
 pub enum Var {
-    Vec(String, i64),
+    Vec(String, i64, Vec<i64>),
     Single(String, Option<i64>),
 }
 
 impl Var {
     pub fn name(&self) -> &String {
         match self {
-            Var::Vec(name, _)    => name,
+            Var::Vec(name, _, _) => name,
             Var::Single(name, _) => name,
         }
     }
