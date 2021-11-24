@@ -32,33 +32,42 @@ impl ParseContext {
     }
 
     pub fn pos(&self) -> Pos {
-        // TODO: Proper file number
-        Pos::new(self.offset, 0)
+        Pos::new(self.offset, self.file_id)
     }
 }
 
 fn parse_global_var(
-    c: &mut ParseContext, id: String
+    c: &mut ParseContext, name: String
 ) -> Result<RootStatement, CompErr> {
+    let pos = c.pos();
+    let var = parse_var_entry(c, name)?;
+    parse_tok(c, Token::Semicolon)?;
+    Ok(RootStatement::Variable(pos, var))
+}
+
+fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
     let (pos, tok) = pop_tok(c)?;
+
     match tok {
-        Token::LBracket => {
-            let (pos, tok) = pop_tok(c)?;
-            match tok {
-                Token::Value(size) if size > 0 => {
+       Token::LBracket => {
+            match pop_tok(c)? {
+                (_, Token::Value(max_index)) if max_index >= 0 => {
                     parse_tok(c, Token::RBracket)?;
-                    parse_tok(c, Token::Semicolon)?;
-                    Ok(RootStatement::Variable(pos, Var::Vec(id, size)))
+                    Ok(Var::Vec(name, max_index + 1))
                 },
-                other => CompErr::err(&pos, format!(
-                    "Expected positive int. {:?} given", other)),
+                (pos, other) => {
+                    CompErr::err(&pos, format!(
+                        "Expected positive int. Found {:?}", other))
+                },
             }
         },
-        Token::Semicolon => {
-            Ok(RootStatement::Variable(pos, Var::Single(id)))
+        Token::Value(value) => {
+            Ok(Var::Single(name, Some(value)))
         },
-        other => CompErr::err(&pos, format!(
-            "Expected [, (, or ;. Found {:?}", other)),
+        tok => {
+            push_tok(c, (pos, tok));
+            Ok(Var::Single(name, None))
+        },
     }
 }
 
@@ -148,29 +157,6 @@ fn parse_statement(c: &mut ParseContext) -> Result<Statement, CompErr> {
     }
 }
 
-fn parse_auto_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
-    let (pos, tok) = pop_tok(c)?;
-
-    match tok {
-       Token::LBracket => {
-            match pop_tok(c)? {
-                (_, Token::Value(value)) if value >= 1 => {
-                    parse_tok(c, Token::RBracket)?;
-                    Ok(Var::Vec(name, value))
-                },
-                (pos, other) => {
-                    CompErr::err(&pos, format!(
-                        "Expected positive int. Found {:?}", other))
-                },
-            }
-        },
-        tok => {
-            push_tok(c, (pos, tok));
-            Ok(Var::Single(name))
-        },
-    }
-}
-
 // TODO: This loop delim technique is used in multiple places. Abstract away!
 // Expects opening `extrn` to have been parsed
 fn parse_statement_extern(
@@ -225,7 +211,7 @@ fn parse_statement_auto(
                         &pos, "Comma expected, id found".to_string());
                 }
 
-                vars.push(parse_auto_entry(c, id)?);
+                vars.push(parse_var_entry(c, id)?);
                 should_parse_param = false;
             },
             Token::Comma => {

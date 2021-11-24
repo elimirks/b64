@@ -179,6 +179,11 @@ fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let mut value: i64 = 0;
 
     while i < c.content.len() && c.content[i] != '\'' {
+        if index >= 8 {
+            return CompErr::err(
+                &pos, "A char can be at most 8 bytes".to_string());
+        }
+
         let ichar = match c.content[i] {
             '*' => {
                 i += 1;

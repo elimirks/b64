@@ -57,14 +57,14 @@ pub enum Statement {
 #[derive(Debug)]
 pub enum Var {
     Vec(String, i64),
-    Single(String),
+    Single(String, Option<i64>),
 }
 
 impl Var {
     pub fn name(&self) -> &String {
         match self {
-            Var::Vec(name, _) => name,
-            Var::Single(name) => name,
+            Var::Vec(name, _)    => name,
+            Var::Single(name, _) => name,
         }
     }
 }
