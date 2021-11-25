@@ -199,12 +199,12 @@ fn gen_op_single(
 }
 
 /**
- * Generate instructions to diving (or mod) two numbers
- * As per x86 idivq, the results always go to rax and rdx
+ * Prepares sending an LHS and RHS to the FPU
+ * @return (instructions, rhs_loc, used_registers)
  */
-fn gen_op_pre_div(
+fn gen_op_pre_float_op(
     lhs_loc: Loc, init_rhs_loc: Loc
-) -> (LinkedList<String>, RegSet) {
+) -> (LinkedList<String>, Loc, RegSet) {
     let mut instructions = ll!();
     // rax and rdx are always used for div or mod
     let mut used_registers = RegSet::of(Reg::Rax).with(Reg::Rdx);
@@ -237,7 +237,21 @@ fn gen_op_pre_div(
     match lhs_loc {
         Loc::Register(Reg::Rax) => {},
         lhs_loc => instructions.push_back(format!("movq {},%rax", lhs_loc)),
-    }
+    };
+
+    (instructions, rhs_loc, used_registers)
+}
+
+/**
+ * Generate instructions to diving (or mod) two numbers
+ * As per x86 idivq, the results always go to rax and rdx
+ */
+fn gen_op_pre_div(
+    lhs_loc: Loc, init_rhs_loc: Loc
+) -> (LinkedList<String>, RegSet) {
+    let (mut instructions, rhs_loc, used_registers) =
+        gen_op_pre_float_op(lhs_loc, init_rhs_loc);
+
     instructions.push_back("movq $0,%rdx".to_string());
     instructions.push_back(format!("idivq {}", rhs_loc));
 
@@ -258,6 +272,15 @@ fn gen_op_div(
     (instructions, Loc::Register(Reg::Rax), used_registers)
 }
 
+fn gen_op_mul(
+    lhs_loc: Loc, rhs_loc: Loc
+) -> (LinkedList<String>, Loc, RegSet) {
+    let (mut instructions, rhs_loc, used_registers) =
+        gen_op_pre_float_op(lhs_loc, rhs_loc);
+    instructions.push_back(format!("imulq {}", rhs_loc));
+    (instructions, Loc::Register(Reg::Rax), used_registers)
+}
+
 /**
  * Generates instructions for applying the operator to the given lhs & rhs.
  * May override either lhs_loc or rhs_loc if they are registers.
@@ -272,8 +295,12 @@ fn gen_op_command(
         BinOp::Sub        => gen_op_single("subq", lhs_loc, rhs_loc),
         BinOp::Mod        => gen_op_mod(lhs_loc, rhs_loc),
         BinOp::Div        => gen_op_div(lhs_loc, rhs_loc),
+        BinOp::Mul        => gen_op_mul(lhs_loc, rhs_loc),
         BinOp::ShiftRight => gen_op_single("shr", lhs_loc, rhs_loc),
         BinOp::ShiftLeft  => gen_op_single("shl", lhs_loc, rhs_loc),
+        BinOp::And        => gen_op_single("andq", lhs_loc, rhs_loc),
+        BinOp::Or         => gen_op_single("orq", lhs_loc, rhs_loc),
+        BinOp::Xor        => gen_op_single("xorq", lhs_loc, rhs_loc),
         BinOp::Eq         => gen_op_cmp("sete", lhs_loc, rhs_loc),
         BinOp::Ne         => gen_op_cmp("setne", lhs_loc, rhs_loc),
         BinOp::Le         => gen_op_cmp("setle", lhs_loc, rhs_loc),

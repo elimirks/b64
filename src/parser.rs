@@ -371,11 +371,14 @@ fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
     op_exprs.append(&mut parse_op_exprs(c)?);
 
     let lr_op_order = vec!(
-        vec!(BinOp::Div, BinOp::Mod),
+        vec!(BinOp::Div, BinOp::Mod, BinOp::Mul),
         vec!(BinOp::Add, BinOp::Sub),
         vec!(BinOp::ShiftLeft, BinOp::ShiftRight),
         vec!(BinOp::Gt, BinOp::Lt, BinOp::Ge, BinOp::Le),
         vec!(BinOp::Eq, BinOp::Ne),
+        vec!(BinOp::And),
+        vec!(BinOp::Xor),
+        vec!(BinOp::Or),
     );
 
     for ops in lr_op_order {
@@ -451,8 +454,12 @@ fn parse_op_exprs(
             Token::Ne         => BinOp::Ne,
             Token::ShiftLeft  => BinOp::ShiftLeft,
             Token::ShiftRight => BinOp::ShiftRight,
+            Token::Ampersand  => BinOp::And,
+            Token::Pipe       => BinOp::Or,
+            Token::Caret      => BinOp::Xor,
             Token::Percent    => BinOp::Mod,
             Token::Slash      => BinOp::Div,
+            Token::Asterisk   => BinOp::Mul,
             tok => {
                 // The next token isn't a chaining token... Rewind!
                 push_tok(c, (pos, tok));

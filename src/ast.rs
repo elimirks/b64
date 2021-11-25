@@ -118,6 +118,7 @@ pub enum BinOp {
     Sub,
     Div,
     Mod,
+    Mul,
     Eq,
     Ne,
     Le,
@@ -126,6 +127,9 @@ pub enum BinOp {
     Gt,
     ShiftRight,
     ShiftLeft,
+    And,
+    Or,
+    Xor,
 }
 
 #[derive(Debug, Clone, PartialEq)]
