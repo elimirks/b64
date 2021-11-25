@@ -35,6 +35,8 @@ B uses the asterisk character for escape sequences. Here is the mapping of B esc
 '*'' => '\''
 '*"' => '\"'
 ```
+
+In the B manual it also mentions `*e` for EOF. Since there is no EOF char in ASCII, this code is left out. It also mentions `*{` and `*}` for `{` and `}`. I'm guessing there was some implementation detail restricting usage of `{` and `}`. So you _could_ use those escape sequences if you want, but you don't need to.
 ### Logical vs bitwise operators
 There are no logical `&&` or `||` operators like in C. However, using the `==`, `!=`, `>=`, `<=`, `>`, or `<` operators will always return `0` or `1`. So you can us the bitwise `&` and `|` operators instead.
 

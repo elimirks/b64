@@ -793,6 +793,14 @@ fn gen_cond(
             gen_cond_cmp(c, "jge", lhs, rhs, end_label),
         Expr::BinOperator(_, BinOp::Le, lhs, rhs) =>
             gen_cond_cmp(c, "jg", lhs, rhs, end_label),
+        Expr::Int(_, value) => {
+            if *value == 0 {
+                Ok(ll!(format!("jmp {}", end_label)))
+            } else {
+                // For non-zero ints, no comparison needs to be made!
+                Ok(ll!())
+            }
+        },
         _ => {
             // Fallback to evaluating the entire conditional expression
             let (mut instructions, cond_loc, _) = gen_expr(c, cond)?;
@@ -866,12 +874,13 @@ fn gen_auto(
         match var {
             Var::Vec(_, size, initial) => {
                 // The first value in the stack for a vector is a data pointer
-                instructions.push_back(format!("leaq {}(%rbp),%rax", size * 8));
+                instructions.push_back(format!(
+                    "leaq {}(%rbp),%rax", - (1 + size) * 8));
                 instructions.push_back(format!("movq %rax,{}", dest_loc));
 
                 for i in 0..initial.len() {
                     let value = initial[i];
-                    let val_dest_loc = Loc::Stack(size + i as i64);
+                    let val_dest_loc = Loc::Stack(-size - 1 + i as i64);
 
                     let (mut val_inst, val_loc, _) = gen_int(value);
                     instructions.append(&mut val_inst);

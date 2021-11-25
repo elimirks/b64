@@ -1,4 +1,30 @@
 /**
+ * Returns the length of the given string reference.
+ * The returned length is in _bytes_, not length in wide chars
+ */
+strlen(s) {
+    auto len 0;
+    while (1) {
+        auto clen;
+        clen = charlen(*s);
+        len = len + clen;
+        if (clen < 8) {
+            break;
+        }
+
+        s = s + 8;
+    }
+    return(len);
+}
+
+/**
+ * Writes the given string reference to stdout.
+ */
+putstr(s) {
+    syscall(1, 1, s, strlen(s));
+}
+
+/**
  * Returns the length of the given wide char.
  */
 charlen(c) {

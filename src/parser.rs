@@ -52,6 +52,7 @@ fn parse_vec_values(c: &mut ParseContext) -> Result<Vec<i64>, CompErr> {
         (_, Token::Value(value)) => {
             values.push(value);
         },
+        (_, Token::Str(values)) => return Ok(values),
         other => {
             push_tok(c, other);
             return Ok(values);
@@ -489,12 +490,12 @@ fn parse_expr_id_unchained(
                     pos.clone(),
                     BinOp::Add,
                     Box::new(Expr::Id(pos.clone(), id)),
-                    // Multiply by 8 (aka left shift by 4)
+                    // Multiply by 8 (aka left shift by 3)
                     Box::new(Expr::BinOperator(
                         pos.clone(),
                         BinOp::ShiftLeft,
                         Box::new(index_expr),
-                        Box::new(Expr::Int(pos, 4))
+                        Box::new(Expr::Int(pos, 3))
                     ))
                 ))
             ))

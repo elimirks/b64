@@ -5,6 +5,7 @@ use crate::ast::{Pos, CompErr};
 pub enum Token {
     Id(String),
     Label(String),
+    Str(Vec<i64>),
     Value(i64),
     Return,
     Auto,
@@ -79,6 +80,8 @@ pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
                 get_tok_int(c)
             } else if ch == '\'' {
                 get_tok_char(c)
+            } else if ch == '\"' {
+                get_tok_str(c)
             } else {
                 get_tok_symbol(c)
             }
@@ -164,24 +167,61 @@ fn get_tok_int(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     }
 }
 
+fn get_tok_str(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
+    let pos = c.pos();
+    let mut values = Vec::<i64>::new();
+
+    c.offset += 1;
+    while c.offset < c.content.len() && c.content[c.offset] != '\"' {
+        values.push(get_inner_char(c, '\"')?);
+    }
+
+    // Check if the final char ends in 00
+    // Ensures that string literals are null terminates
+    match values.last() {
+        Some(value) => if (*value as u64) & (0xff << 56) != 0 {
+            values.push(0);
+        },
+        None => values.push(0),
+    }
+
+    if c.offset >= c.content.len() {
+        CompErr::err(&pos, "Hit EOF while parsing string".to_string())
+    } else {
+        c.offset += 1;
+        Ok((pos, Token::Str(values)))
+    }
+}
+
 /**
  * Tokenizes a char literal into a value
  * Expects opening quote character to have been peeked at already
  */
 fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
-    // Start at the character right after the starting quote
-    let mut i = c.offset + 1;
+    c.offset += 1;
+    let value = get_inner_char(c, '\'')?;
+
+    if c.offset >= c.content.len() {
+        CompErr::err(&pos, "Hit EOF while parsing char".to_string())
+    } else if c.content[c.offset] != '\'' {
+        CompErr::err(&c.pos(), "Expected closing quote".to_string())
+    } else {
+        c.offset += 1;
+        Ok((pos, Token::Value(value)))
+    }
+}
+
+// Gets char enclosed in quotes. Packs 8 8-bit chars into a 64 bit value
+fn get_inner_char(
+    c: &mut ParseContext, terminal: char
+) -> Result<i64, CompErr> {
+    let mut i = c.offset;
     // Index of the char literal, NOT of the content
     let mut index = 0;
     let mut value: i64 = 0;
 
-    while i < c.content.len() && c.content[i] != '\'' {
-        if index >= 8 {
-            return CompErr::err(
-                &pos, "A char can be at most 8 bytes".to_string());
-        }
-
+    while i < c.content.len() && c.content[i] != terminal && index < 8 {
         let ichar = match c.content[i] {
             '*' => {
                 i += 1;
@@ -197,7 +237,11 @@ fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
                     't'  => '\t' as i64,
                     '\'' => '\'' as i64,
                     '\"' => '\"' as i64,
-                    other => return CompErr::err(&pos, format!(
+                    // For compliance with the B manual
+                    // These aren't ever necessary in code compiled with b64
+                    '{'  => '{' as i64,
+                    '}'  => '}' as i64,
+                    other => return CompErr::err(&c.pos(), format!(
                         "Unknown escape char: {}", other)),
                 }
             },
@@ -206,7 +250,7 @@ fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 
                 if ichar >= 256 || ichar < 0 {
                     return CompErr::err(
-                        &pos,
+                        &c.pos(),
                         "b64 only supports ASCII chars".to_string());
                 }
 
@@ -220,12 +264,8 @@ fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
         i += 1;
     }
 
-    if i >= c.content.len() {
-        CompErr::err(&pos, "Hit EOF while parsing char".to_string())
-    } else {
-        c.offset = i + 1;
-        Ok((pos, Token::Value(value)))
-    }
+    c.offset = i;
+    Ok(value)
 }
 
 // Parsed word-like tokens. Includes keywords and IDs
