@@ -32,8 +32,7 @@ putnum(n) {
 
     if (n < 0) {
         putcharSingle('-');
-        /* FIXME: Change to -n once unaries are supported */
-        n = 0 - n;
+        n = -n;
     } else if (n == 0) {
         putcharSingle('0');
         return;

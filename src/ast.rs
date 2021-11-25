@@ -89,7 +89,8 @@ pub enum Expr {
     Int(Pos, i64),
     Assignment(Pos, String, Box<Expr>),
     DerefAssignment(Pos, Box<Expr>, Box<Expr>),
-    Operator(Pos, Op, Box<Expr>, Box<Expr>),
+    UnaryOperator(Pos, UnaryOp, Box<Expr>),
+    BinOperator(Pos, BinOp, Box<Expr>, Box<Expr>),
     Reference(Pos, String),
     Dereference(Pos, Box<Expr>),
 }
@@ -102,7 +103,8 @@ impl GetPos for Expr {
             Expr::Int(pos, _)                => pos.clone(),
             Expr::Assignment(pos, _, _)      => pos.clone(),
             Expr::DerefAssignment(pos, _, _) => pos.clone(),
-            Expr::Operator(pos, _, _, _)     => pos.clone(),
+            Expr::UnaryOperator(pos, _, _)   => pos.clone(),
+            Expr::BinOperator(pos, _, _, _)  => pos.clone(),
             Expr::Reference(pos, _)          => pos.clone(),
             Expr::Dereference(pos, _)        => pos.clone(),
         }
@@ -110,7 +112,7 @@ impl GetPos for Expr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Op {
+pub enum BinOp {
     Assign,
     Add,
     Sub,
@@ -126,16 +128,24 @@ pub enum Op {
     ShiftLeft,
 }
 
-impl Op {
+#[derive(Debug, Clone, PartialEq)]
+pub enum UnaryOp {
+    Increment,
+    Decrement,
+    Negate,
+    BitNot,
+}
+
+impl BinOp {
     #[allow(dead_code)]
     pub fn is_comparison(&self) -> bool {
         match self {
-            Op::Eq => true,
-            Op::Ne => true,
-            Op::Le => true,
-            Op::Ge => true,
-            Op::Lt => true,
-            Op::Gt => true,
+            BinOp::Eq => true,
+            BinOp::Ne => true,
+            BinOp::Le => true,
+            BinOp::Ge => true,
+            BinOp::Lt => true,
+            BinOp::Gt => true,
             _      => false,
         }
     }

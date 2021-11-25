@@ -8,6 +8,8 @@ main() {
     putchar('*n');
     putnum(x);
     putchar('*n');
+    putnum(++y);
+    putchar('*n');
     putnum(y);
     putchar('*n');
 }

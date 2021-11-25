@@ -265,22 +265,22 @@ fn gen_op_div(
  * @return (instructions, dest_loc, extra_registers)
  */
 fn gen_op_command(
-    op: &Op, lhs_loc: Loc, rhs_loc: Loc
+    op: &BinOp, lhs_loc: Loc, rhs_loc: Loc
 ) -> (LinkedList<String>, Loc, RegSet) {
     match op {
-        Op::Add        => gen_op_single("addq", lhs_loc, rhs_loc),
-        Op::Sub        => gen_op_single("subq", lhs_loc, rhs_loc),
-        Op::Mod        => gen_op_mod(lhs_loc, rhs_loc),
-        Op::Div        => gen_op_div(lhs_loc, rhs_loc),
-        Op::ShiftRight => gen_op_single("shr", lhs_loc, rhs_loc),
-        Op::ShiftLeft  => gen_op_single("shl", lhs_loc, rhs_loc),
-        Op::Eq         => gen_op_cmp("sete", lhs_loc, rhs_loc),
-        Op::Ne         => gen_op_cmp("setne", lhs_loc, rhs_loc),
-        Op::Le         => gen_op_cmp("setle", lhs_loc, rhs_loc),
-        Op::Lt         => gen_op_cmp("setl", lhs_loc, rhs_loc),
-        Op::Ge         => gen_op_cmp("setge", lhs_loc, rhs_loc),
-        Op::Gt         => gen_op_cmp("setg", lhs_loc, rhs_loc),
-        Op::Assign     => panic!("Assignments should be parsed differently"),
+        BinOp::Add        => gen_op_single("addq", lhs_loc, rhs_loc),
+        BinOp::Sub        => gen_op_single("subq", lhs_loc, rhs_loc),
+        BinOp::Mod        => gen_op_mod(lhs_loc, rhs_loc),
+        BinOp::Div        => gen_op_div(lhs_loc, rhs_loc),
+        BinOp::ShiftRight => gen_op_single("shr", lhs_loc, rhs_loc),
+        BinOp::ShiftLeft  => gen_op_single("shl", lhs_loc, rhs_loc),
+        BinOp::Eq         => gen_op_cmp("sete", lhs_loc, rhs_loc),
+        BinOp::Ne         => gen_op_cmp("setne", lhs_loc, rhs_loc),
+        BinOp::Le         => gen_op_cmp("setle", lhs_loc, rhs_loc),
+        BinOp::Lt         => gen_op_cmp("setl", lhs_loc, rhs_loc),
+        BinOp::Ge         => gen_op_cmp("setge", lhs_loc, rhs_loc),
+        BinOp::Gt         => gen_op_cmp("setg", lhs_loc, rhs_loc),
+        BinOp::Assign     => panic!("Assignments should be parsed differently"),
     }
 }
 
@@ -353,8 +353,57 @@ fn gen_pre_op(
     Ok((lhs_ins, new_lhs_loc, rhs_loc, used_registers))
 }
 
-fn gen_op(
-    c: &FunContext, op: &Op, lhs: &Expr, rhs: &Expr
+fn gen_unary_op_assign(
+    c: &FunContext, asm_op: &str, expr: &Expr
+) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
+    let (mut instructions, expr_loc, used_registers) = gen_expr(c, expr)?;
+
+    match expr_loc {
+        Loc::Register(_) | Loc::Immediate(_) =>
+            return CompErr::err(&expr.pos(), format!(
+                "`++` or `--` must operate on a variable")),
+        _ => {},
+    };
+
+    instructions.push_back(format!("{} {}", asm_op, expr_loc));
+    Ok((instructions, expr_loc, used_registers))
+}
+
+fn gen_unary_op_non_assign(
+    c: &FunContext, asm_op: &str, expr: &Expr
+) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
+    let (mut instructions, expr_loc, mut used_registers) = gen_expr(c, expr)?;
+    let dest_reg = match expr_loc {
+        Loc::Register(reg) => reg,
+        _ => {
+            let dest_reg = match used_registers.first() {
+                Some(reg) => reg,
+                None      => {
+                    used_registers = used_registers.with(Reg::Rax);
+                    Reg::Rax
+                },
+            };
+            instructions.push_back(format!("movq {},%{}", expr_loc, dest_reg));
+            dest_reg
+        },
+    };
+    instructions.push_back(format!("{} %{}", asm_op, dest_reg));
+    Ok((instructions, Loc::Register(dest_reg), used_registers))
+}
+
+fn gen_unary_op(
+    c: &FunContext, op: &UnaryOp, expr: &Expr
+) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
+    match op {
+        UnaryOp::Increment => gen_unary_op_assign(c, "incq", expr),
+        UnaryOp::Decrement => gen_unary_op_assign(c, "decq", expr),
+        UnaryOp::BitNot    => gen_unary_op_non_assign(c, "notq", expr),
+        UnaryOp::Negate    => gen_unary_op_non_assign(c, "negq", expr),
+    }
+}
+
+fn gen_bin_op(
+    c: &FunContext, op: &BinOp, lhs: &Expr, rhs: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     let (mut instructions, lhs_loc, rhs_loc, mut used_registers) =
         gen_pre_op(c, lhs, rhs)?;
@@ -657,7 +706,8 @@ fn gen_expr(
         },
         Expr::Assignment(pos, lhs, rhs)    => gen_expr_ass(c, pos, lhs, rhs),
         Expr::DerefAssignment(_, lhs, rhs) => gen_expr_deref_ass(c, lhs, rhs),
-        Expr::Operator(_, op, lhs, rhs)    => gen_op(c, op, lhs, rhs),
+        Expr::UnaryOperator(_, op, expr)   => gen_unary_op(c, op, expr),
+        Expr::BinOperator(_, op, lhs, rhs) => gen_bin_op(c, op, lhs, rhs),
         Expr::Call(pos, name, params)      => gen_call(c, pos, name, params),
         Expr::Reference(pos, name)         => gen_reference(c, pos, name),
         Expr::Dereference(_, expr)         => gen_dereference(c, expr),
@@ -704,17 +754,17 @@ fn gen_cond(
     end_label: &String
 ) -> Result<LinkedList<String>, CompErr> {
     match cond {
-        Expr::Operator(_, Op::Eq, lhs, rhs) =>
+        Expr::BinOperator(_, BinOp::Eq, lhs, rhs) =>
             gen_cond_cmp(c, "jne", lhs, rhs, end_label),
-        Expr::Operator(_, Op::Ne, lhs, rhs) =>
+        Expr::BinOperator(_, BinOp::Ne, lhs, rhs) =>
             gen_cond_cmp(c, "je", lhs, rhs, end_label),
-        Expr::Operator(_, Op::Gt, lhs, rhs) =>
+        Expr::BinOperator(_, BinOp::Gt, lhs, rhs) =>
             gen_cond_cmp(c, "jle", lhs, rhs, end_label),
-        Expr::Operator(_, Op::Ge, lhs, rhs) =>
+        Expr::BinOperator(_, BinOp::Ge, lhs, rhs) =>
             gen_cond_cmp(c, "jl", lhs, rhs, end_label),
-        Expr::Operator(_, Op::Lt, lhs, rhs) =>
+        Expr::BinOperator(_, BinOp::Lt, lhs, rhs) =>
             gen_cond_cmp(c, "jge", lhs, rhs, end_label),
-        Expr::Operator(_, Op::Le, lhs, rhs) =>
+        Expr::BinOperator(_, BinOp::Le, lhs, rhs) =>
             gen_cond_cmp(c, "jg", lhs, rhs, end_label),
         _ => {
             // Fallback to evaluating the entire conditional expression

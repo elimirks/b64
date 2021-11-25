@@ -366,16 +366,16 @@ fn parse_statement_expr(c: &mut ParseContext) -> Result<Statement, CompErr> {
 }
 
 fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
-    // NOTE: The `Op::Assign` here has no meaning. It's just a placeholder
-    let mut op_exprs = vec!((Op::Assign, parse_expr_unchained(c)?));
+    // NOTE: The `BinOp::Assign` here has no meaning. It's just a placeholder
+    let mut op_exprs = vec!((BinOp::Assign, parse_expr_unchained(c)?));
     op_exprs.append(&mut parse_op_exprs(c)?);
 
     let lr_op_order = vec!(
-        vec!(Op::Div, Op::Mod),
-        vec!(Op::Add, Op::Sub),
-        vec!(Op::ShiftLeft, Op::ShiftRight),
-        vec!(Op::Gt, Op::Lt, Op::Ge, Op::Le),
-        vec!(Op::Eq, Op::Ne),
+        vec!(BinOp::Div, BinOp::Mod),
+        vec!(BinOp::Add, BinOp::Sub),
+        vec!(BinOp::ShiftLeft, BinOp::ShiftRight),
+        vec!(BinOp::Gt, BinOp::Lt, BinOp::Ge, BinOp::Le),
+        vec!(BinOp::Eq, BinOp::Ne),
     );
 
     for ops in lr_op_order {
@@ -387,8 +387,7 @@ fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
             }
 
             let (op, expr) = op_exprs.remove(i);
-
-            op_exprs[i - 1].1 = Expr::Operator(
+            op_exprs[i - 1].1 = Expr::BinOperator(
                 expr.pos(),
                 op,
                 Box::new(op_exprs[i - 1].1.clone()),
@@ -401,14 +400,14 @@ fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
     // We handle them differently since their priority is Right to Left
     loop {
         match op_exprs.pop() {
-            Some((Op::Assign, expr)) => {
+            Some((BinOp::Assign, expr)) => {
                 let prev_expr = match op_exprs.pop() {
-                    Some((Op::Assign, expr)) => expr,
+                    Some((BinOp::Assign, expr)) => expr,
                     Some(_) => panic!(
                         "There should only be assignments at this point"),
                     None => return Ok(expr),
                 };
-                op_exprs.push((Op::Assign, match prev_expr {
+                op_exprs.push((BinOp::Assign, match prev_expr {
                     Expr::Id(pos, id) => {
                         Expr::Assignment(
                             pos,
@@ -436,24 +435,24 @@ fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
 
 fn parse_op_exprs(
     c: &mut ParseContext
-) -> Result<Vec<(Op, Expr)>, CompErr> {
+) -> Result<Vec<(BinOp, Expr)>, CompErr> {
     let mut op_exprs = vec!();
     loop {
         let (pos, tok) = pop_tok(c)?;
         let op = match tok {
-            Token::Eq         => Op::Assign,
-            Token::Plus       => Op::Add,
-            Token::Minus      => Op::Sub,
-            Token::EqEq       => Op::Eq,
-            Token::Le         => Op::Le,
-            Token::Lt         => Op::Lt,
-            Token::Ge         => Op::Ge,
-            Token::Gt         => Op::Gt,
-            Token::Ne         => Op::Ne,
-            Token::ShiftLeft  => Op::ShiftLeft,
-            Token::ShiftRight => Op::ShiftRight,
-            Token::Percent    => Op::Mod,
-            Token::Slash      => Op::Div,
+            Token::Eq         => BinOp::Assign,
+            Token::Plus       => BinOp::Add,
+            Token::Minus      => BinOp::Sub,
+            Token::EqEq       => BinOp::Eq,
+            Token::Le         => BinOp::Le,
+            Token::Lt         => BinOp::Lt,
+            Token::Ge         => BinOp::Ge,
+            Token::Gt         => BinOp::Gt,
+            Token::Ne         => BinOp::Ne,
+            Token::ShiftLeft  => BinOp::ShiftLeft,
+            Token::ShiftRight => BinOp::ShiftRight,
+            Token::Percent    => BinOp::Mod,
+            Token::Slash      => BinOp::Div,
             tok => {
                 // The next token isn't a chaining token... Rewind!
                 push_tok(c, (pos, tok));
@@ -479,14 +478,14 @@ fn parse_expr_id_unchained(
             parse_tok(c, Token::RBracket)?;
 
             Ok(Expr::Dereference(pos.clone(),
-                Box::new(Expr::Operator(
+                Box::new(Expr::BinOperator(
                     pos.clone(),
-                    Op::Add,
+                    BinOp::Add,
                     Box::new(Expr::Id(pos.clone(), id)),
                     // Multiply by 8 (aka left shift by 4)
-                    Box::new(Expr::Operator(
+                    Box::new(Expr::BinOperator(
                         pos.clone(),
-                        Op::ShiftLeft,
+                        BinOp::ShiftLeft,
                         Box::new(index_expr),
                         Box::new(Expr::Int(pos, 4))
                     ))
@@ -512,6 +511,14 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
         },
         Token::Asterisk => Ok(Expr::Dereference(
             pos, Box::new(parse_expr_unchained(c)?))),
+        Token::PlusPlus => Ok(Expr::UnaryOperator(
+            pos, UnaryOp::Increment, Box::new(parse_expr_unchained(c)?))),
+        Token::MinusMinus => Ok(Expr::UnaryOperator(
+            pos, UnaryOp::Decrement, Box::new(parse_expr_unchained(c)?))),
+        Token::Minus => Ok(Expr::UnaryOperator(
+            pos, UnaryOp::Negate, Box::new(parse_expr_unchained(c)?))),
+        Token::Tilde => Ok(Expr::UnaryOperator(
+            pos, UnaryOp::BitNot, Box::new(parse_expr_unchained(c)?))),
         // Allow parens for disambiguation
         Token::LParen => {
             let expr = parse_expr(c)?;
