@@ -82,7 +82,7 @@ impl Var {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     Id(Pos, String),
     Call(Pos, String, Vec<Expr>),
@@ -109,8 +109,9 @@ impl GetPos for Expr {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Op {
+    Assign,
     Add,
     Sub,
     Div,

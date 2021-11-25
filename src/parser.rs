@@ -366,57 +366,103 @@ fn parse_statement_expr(c: &mut ParseContext) -> Result<Statement, CompErr> {
 }
 
 fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
-    let first_expr = parse_expr_unchained(c)?;
-    let (pos, next_tok) = pop_tok(c)?;
+    // NOTE: The `Op::Assign` here has no meaning. It's just a placeholder
+    let mut op_exprs = vec!((Op::Assign, parse_expr_unchained(c)?));
+    op_exprs.append(&mut parse_op_exprs(c)?);
 
-    match next_tok {
-        Token::Eq => match first_expr {
-            Expr::Id(pos, lhs) => Ok(Expr::Assignment(
-                pos,
-                lhs,
-                Box::new(parse_expr(c)?)
-            )),
-            Expr::Dereference(pos, lhs) => Ok(Expr::DerefAssignment(
-                pos,
-                lhs,
-                Box::new(parse_expr(c)?)
-            )),
-            expr => {
-                CompErr::err(
-                    &expr.pos(),
-                    "lhs of assignment must be an ID or dereference".to_string()
-                )
+    let lr_op_order = vec!(
+        vec!(Op::Div, Op::Mod),
+        vec!(Op::Add, Op::Sub),
+        vec!(Op::ShiftLeft, Op::ShiftRight),
+        vec!(Op::Gt, Op::Lt, Op::Ge, Op::Le),
+        vec!(Op::Eq, Op::Ne),
+    );
+
+    for ops in lr_op_order {
+        let mut i = 1;
+        while i < op_exprs.len() {
+            if !ops.contains(&op_exprs[i].0) {
+                i += 1;
+                continue;
+            }
+
+            let (op, expr) = op_exprs.remove(i);
+
+            op_exprs[i - 1].1 = Expr::Operator(
+                expr.pos(),
+                op,
+                Box::new(op_exprs[i - 1].1.clone()),
+                Box::new(expr)
+            );
+        }
+    }
+
+    // Last and least, assignments
+    // We handle them differently since their priority is Right to Left
+    loop {
+        match op_exprs.pop() {
+            Some((Op::Assign, expr)) => {
+                let prev_expr = match op_exprs.pop() {
+                    Some((Op::Assign, expr)) => expr,
+                    Some(_) => panic!(
+                        "There should only be assignments at this point"),
+                    None => return Ok(expr),
+                };
+                op_exprs.push((Op::Assign, match prev_expr {
+                    Expr::Id(pos, id) => {
+                        Expr::Assignment(
+                            pos,
+                            id.to_string(),
+                            Box::new(expr)
+                        )
+                    },
+                    Expr::Dereference(pos, lhs) => {
+                        Expr::DerefAssignment(
+                            pos,
+                            lhs,
+                            Box::new(expr)
+                        )
+                    },
+                    _ => return CompErr::err(
+                        &expr.pos(),
+                        "lhs of assignment must be ID or deref".to_string()),
+                }));
             },
-        },
-        Token::Plus       => chain_expr(c, first_expr, Op::Add),
-        Token::Minus      => chain_expr(c, first_expr, Op::Sub),
-        Token::EqEq       => chain_expr(c, first_expr, Op::Eq),
-        Token::Le         => chain_expr(c, first_expr, Op::Le),
-        Token::Lt         => chain_expr(c, first_expr, Op::Lt),
-        Token::Ge         => chain_expr(c, first_expr, Op::Ge),
-        Token::Gt         => chain_expr(c, first_expr, Op::Gt),
-        Token::Ne         => chain_expr(c, first_expr, Op::Ne),
-        Token::ShiftLeft  => chain_expr(c, first_expr, Op::ShiftLeft),
-        Token::ShiftRight => chain_expr(c, first_expr, Op::ShiftRight),
-        Token::Percent    => chain_expr(c, first_expr, Op::Mod),
-        Token::Slash      => chain_expr(c, first_expr, Op::Div),
-        tok => {
-            // The next token isn't a chaining token... Rewind!
-            push_tok(c, (pos, tok));
-            Ok(first_expr)
-        },
+            Some(_) => panic!("There should only be assignments at this point"),
+            None    => panic!("Expect at least one element on the stack"),
+        }
     }
 }
 
-fn chain_expr(c: &mut ParseContext, lhs: Expr, op: Op) -> Result<Expr, CompErr> {
-    let rhs = parse_expr(c)?;
-
-    Ok(Expr::Operator(
-        rhs.pos(),
-        op,
-        Box::new(lhs),
-        Box::new(rhs)
-    ))
+fn parse_op_exprs(
+    c: &mut ParseContext
+) -> Result<Vec<(Op, Expr)>, CompErr> {
+    let mut op_exprs = vec!();
+    loop {
+        let (pos, tok) = pop_tok(c)?;
+        let op = match tok {
+            Token::Eq         => Op::Assign,
+            Token::Plus       => Op::Add,
+            Token::Minus      => Op::Sub,
+            Token::EqEq       => Op::Eq,
+            Token::Le         => Op::Le,
+            Token::Lt         => Op::Lt,
+            Token::Ge         => Op::Ge,
+            Token::Gt         => Op::Gt,
+            Token::Ne         => Op::Ne,
+            Token::ShiftLeft  => Op::ShiftLeft,
+            Token::ShiftRight => Op::ShiftRight,
+            Token::Percent    => Op::Mod,
+            Token::Slash      => Op::Div,
+            tok => {
+                // The next token isn't a chaining token... Rewind!
+                push_tok(c, (pos, tok));
+                break;
+            },
+        };
+        op_exprs.push((op, parse_expr_unchained(c)?));
+    }
+    Ok(op_exprs)
 }
 
 fn parse_expr_id_unchained(

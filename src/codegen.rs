@@ -280,6 +280,7 @@ fn gen_op_command(
         Op::Lt         => gen_op_cmp("setl", lhs_loc, rhs_loc),
         Op::Ge         => gen_op_cmp("setge", lhs_loc, rhs_loc),
         Op::Gt         => gen_op_cmp("setg", lhs_loc, rhs_loc),
+        Op::Assign     => panic!("Assignments should be parsed differently"),
     }
 }
 

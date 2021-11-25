@@ -85,7 +85,11 @@ fn main() {
                 .expect("Failed running program");
 
             fs::remove_file(output_path).unwrap();
-            std::process::exit(prog_status.code().unwrap());
+
+            std::process::exit(match prog_status.code() {
+                Some(code) => code,
+                _          => 1,
+            });
         }
     }
 }
