@@ -88,6 +88,10 @@ macro_rules! ll {
     }};
 }
 
+fn label_for_string_id(file_id: usize, string_index: usize) -> String {
+    format!(".STR_{}_{}", file_id, string_index)
+}
+
 /**
  * Allocates stack memory for auto local_var_locs and finds labels.
  * @param body The function body to search for auto declarations
@@ -731,6 +735,11 @@ fn gen_expr(
                     "Variable {} not in scope", name)),
             }
         },
+        Expr::Str(_, (file_id, string_index)) => {
+            let label = label_for_string_id(*file_id, *string_index);
+            let instructions = ll!(format!("leaq {}(%rip),%rax", label));
+            Ok((instructions, Loc::Register(Reg::Rax), RegSet::of(Reg::Rax)))
+        },
         Expr::Assignment(pos, lhs, rhs)    => gen_expr_ass(c, pos, lhs, rhs),
         Expr::DerefAssignment(_, lhs, rhs) => gen_expr_deref_ass(c, lhs, rhs),
         Expr::UnaryOperator(_, op, expr)   => gen_unary_op(c, op, expr),
@@ -1049,7 +1058,7 @@ fn generate_data_segment(
                     // +1 for the vec pointer
                     writeln!(w, ".skip {}", (1 + size) * 8)?;
                 } else {
-                    // One extra at the beggining for vec pointer
+                    // One extra at the begining for vec pointer
                     write!(w, ".quad 0")?;
 
                     for i in 0..initial.len() {
@@ -1098,19 +1107,36 @@ fn generate_start(
     Ok(())
 }
 
+fn generate_strings(
+    strings: &Vec<(usize, Vec<Vec<i64>>)>, w: &mut dyn Write
+) -> Result<(), std::io::Error> {
+    for (file_id, file_strings) in strings {
+        for (string_index, string_quads) in file_strings.iter().enumerate() {
+            let label = label_for_string_id(*file_id, string_index);
+            write!(w, "{}:\n    .quad {}", label, string_quads[0])?;
+            for i in 1..string_quads.len() {
+                write!(w, ",{}", string_quads[i])?;
+            }
+            writeln!(w, "")?;
+        }
+    }
+    Ok(())
+}
+
 fn gen(
-    statements: &Vec<RootStatement>, writer: &mut dyn Write
+    parse_result: &ParseResult, writer: &mut dyn Write
 ) -> Result<(), CompErr> {
     let mut w = BufWriter::new(writer);
 
-    let (global_scope, root_vars) = root_prepass(&statements)?;
+    let (global_scope, root_vars) = root_prepass(&parse_result.root_statements)?;
 
     CompErr::from_io_res(generate_data_segment(&root_vars, &mut w))?;
+    CompErr::from_io_res(generate_strings(&parse_result.strings, &mut w))?;
     CompErr::from_io_res(generate_start(&root_vars, &mut w))?;
 
     let mut label_counter = 0;
 
-    for statement in statements {
+    for statement in &parse_result.root_statements {
         match statement {
             RootStatement::Function(pos, name, args, body) => {
                 let mut c = FunContext {
@@ -1141,7 +1167,7 @@ fn gen(
 }
 
 pub fn generate(parse_result: &ParseResult, writer: &mut dyn Write) {
-    match gen(&parse_result.root_statements, writer) {
+    match gen(&parse_result, writer) {
         Ok(_) => {},
         Err(err) => {
             print_comp_error(parse_result, &err);

@@ -5,6 +5,8 @@ pub struct ParseResult {
     // Stored in order of file_id (in Pos)
     // Stores (file_name, file_contents)
     pub file_contents: Vec<(String, String)>,
+    // Stores (file_id, strings_vec)
+    pub strings: Vec<(usize, Vec<Vec<i64>>)>,
     pub root_statements: Vec<RootStatement>,
     pub error: Option<CompErr>,
 }
@@ -14,6 +16,8 @@ pub struct ParseContext {
     // Offset for use by the tokenizer
     pub offset: usize,
     pub file_id: usize,
+    // Tracks the "floating" string literals that aren't assigned to vectors
+    pub strings: Vec<Vec<i64>>,
     // Used for the tokenizer stack
     pub tok_stack: Vec<(Pos, Token)>,
 }
@@ -513,6 +517,10 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
     match tok {
         Token::Id(id) => parse_expr_id_unchained(c, pos, id),
         Token::Value(value) => Ok(Expr::Int(pos, value)),
+        Token::Str(value) => {
+            c.strings.push(value);
+            Ok(Expr::Str(pos, (c.file_id, c.strings.len() - 1)))
+        },
         Token::Ampersand => match pop_tok(c)? {
             (pos, Token::Id(id)) => Ok(Expr::Reference(pos, id)),
             (pos, tok) => CompErr::err(&pos, format!("Expected id, found {:?}", tok)),
@@ -629,11 +637,14 @@ pub fn print_comp_error(parse_result: &ParseResult, err: &CompErr) {
     }
 }
 
-fn parse_content(file_id: usize, content: &String) -> Result<Vec<RootStatement>, CompErr> {
+fn parse_content(
+    file_id: usize, content: &String
+) -> Result<(Vec<RootStatement>, Vec<Vec<i64>>), CompErr> {
     let mut c = ParseContext {
         content: content.chars().collect(),
         offset: 0,
         file_id: file_id,
+        strings: vec!(),
         tok_stack: vec!(),
     };
 
@@ -644,13 +655,14 @@ fn parse_content(file_id: usize, content: &String) -> Result<Vec<RootStatement>,
             None            => break,
         }
     }
-    Ok(roots)
+    Ok((roots, c.strings))
 }
 
 pub fn parse_files(paths: &Vec<String>) -> ParseResult {
     let mut result = ParseResult {
         file_contents: vec!(),
         root_statements: vec!(),
+        strings: vec!(),
         error: None,
     };
 
@@ -659,9 +671,10 @@ pub fn parse_files(paths: &Vec<String>) -> ParseResult {
             .expect(format!("Failed reading {}", path).as_str());
 
         match parse_content(file_id, &content) {
-            Ok(mut statements) => {
+            Ok((mut statements, strings)) => {
                 result.root_statements.append(&mut statements);
                 result.file_contents.push((path.to_string(), content));
+                result.strings.push((file_id, strings));
             },
             Err(error) => {
                 result.error = Some(error);

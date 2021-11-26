@@ -85,6 +85,10 @@ impl Var {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Id(Pos, String),
+    // The second parameter is the label id: (file_no, str_index)
+    // The actual string raw data is stored separately, so we can
+    // easily allocate it in the data segment
+    Str(Pos, (usize, usize)),
     Call(Pos, String, Vec<Expr>),
     Int(Pos, i64),
     Assignment(Pos, String, Box<Expr>),
@@ -99,6 +103,7 @@ impl GetPos for Expr {
     fn pos(&self) -> Pos {
         match self {
             Expr::Id(pos, _)                 => pos.clone(),
+            Expr::Str(pos, _)                => pos.clone(),
             Expr::Call(pos, _, _)            => pos.clone(),
             Expr::Int(pos, _)                => pos.clone(),
             Expr::Assignment(pos, _, _)      => pos.clone(),
