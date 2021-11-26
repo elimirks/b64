@@ -1110,6 +1110,9 @@ fn generate_start(
 fn generate_strings(
     strings: &Vec<(usize, Vec<Vec<i64>>)>, w: &mut dyn Write
 ) -> Result<(), std::io::Error> {
+    writeln!(w, ".text")?;
+    // Prevent constant strings from being modified
+    writeln!(w, ".section .rodata")?;
     for (file_id, file_strings) in strings {
         for (string_index, string_quads) in file_strings.iter().enumerate() {
             let label = label_for_string_id(*file_id, string_index);
