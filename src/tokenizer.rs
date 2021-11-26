@@ -73,11 +73,14 @@ pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     consume_ws(c);
 
     match c.peek_char() {
+        Some('0') => {
+            get_tok_int(c, 8)
+        },
         Some(ch) => {
             if ch.is_alphabetic() {
                 Ok(get_tok_word(c))
             } else if ch.is_numeric() {
-                get_tok_int(c)
+                get_tok_int(c, 10)
             } else if ch == '\'' {
                 get_tok_char(c)
             } else if ch == '\"' {
@@ -152,12 +155,14 @@ fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     }
 }
 
-fn get_tok_int(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
+fn get_tok_int(
+    c: &mut ParseContext, radix: u32
+) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
     let current_word = alphanumeric_slice(&c.content, c.offset);
     let str_word: String = current_word.into_iter().collect();
 
-    match str_word.parse::<i64>() {
+    match i64::from_str_radix(&str_word, radix) {
         Ok(num) => {
             c.offset += current_word.len();
             Ok((pos, Token::Value(num)))
