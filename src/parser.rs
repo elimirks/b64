@@ -372,7 +372,7 @@ fn parse_statement_expr(c: &mut ParseContext) -> Result<Statement, CompErr> {
 
 fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
     // NOTE: The `BinOp::Assign` here has no meaning. It's just a placeholder
-    let mut op_exprs = vec!((BinOp::Assign, parse_expr_unchained(c)?));
+    let mut op_exprs = vec!((BinOp::Assign(None), parse_expr_unchained(c)?));
     op_exprs.append(&mut parse_op_exprs(c)?);
 
     let lr_op_order = vec!(
@@ -408,36 +408,96 @@ fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
     // We handle them differently since their priority is Right to Left
     loop {
         match op_exprs.pop() {
-            Some((BinOp::Assign, expr)) => {
-                let prev_expr = match op_exprs.pop() {
-                    Some((BinOp::Assign, expr)) => expr,
+            Some((BinOp::Assign(post_op), rhs_expr)) => {
+                let lhs_expr = match op_exprs.pop() {
+                    Some((BinOp::Assign(_), prev)) => prev,
                     Some(_) => panic!(
                         "There should only be assignments at this point"),
-                    None => return Ok(expr),
+                    None => return Ok(rhs_expr),
                 };
-                op_exprs.push((BinOp::Assign, match prev_expr {
-                    Expr::Id(pos, id) => {
-                        Expr::Assignment(
-                            pos,
-                            id.to_string(),
-                            Box::new(expr)
-                        )
-                    },
-                    Expr::Dereference(pos, lhs) => {
-                        Expr::DerefAssignment(
-                            pos,
-                            lhs,
-                            Box::new(expr)
-                        )
-                    },
-                    _ => return CompErr::err(
-                        &expr.pos(),
-                        "lhs of assignment must be ID or deref".to_string()),
-                }));
+                op_exprs.push((
+                    BinOp::Assign(None),
+                    join_assign_exprs(post_op, lhs_expr, rhs_expr)?
+                ));
             },
             Some(_) => panic!("There should only be assignments at this point"),
             None    => panic!("Expect at least one element on the stack"),
         }
+    }
+}
+
+fn join_assign_exprs(
+    post_op: Option<Box<BinOp>>,
+    lhs_expr: Expr,
+    rhs_expr: Expr,
+) -> Result<Expr, CompErr> {
+    match lhs_expr {
+        Expr::Id(pos, id) => {
+            let rhs = match post_op {
+                Some(post_op) => Expr::BinOperator(
+                    pos.clone(),
+                    *post_op,
+                    Box::new(Expr::Id(pos.clone(), id.to_string())),
+                    Box::new(rhs_expr)
+                ),
+                None => rhs_expr
+            };
+            Ok(Expr::Assignment(
+                pos,
+                id,
+                Box::new(rhs)
+            ))
+        },
+        Expr::Dereference(pos, lhs) => {
+            let rhs = match post_op {
+                Some(post_op) => Expr::BinOperator(
+                    pos.clone(),
+                    *post_op,
+                    lhs.clone(),
+                    Box::new(rhs_expr)
+                ),
+                None => rhs_expr
+            };
+            Ok(Expr::DerefAssignment(
+                pos,
+                lhs,
+                Box::new(rhs)
+            ))
+        },
+        _ => CompErr::err(
+            &lhs_expr.pos(),
+            "lhs of assignment must be ID or deref".to_string()),
+    }
+}
+
+fn parse_op(
+    c: &mut ParseContext
+) -> Result<Option<(usize, BinOp)>, CompErr> {
+    let (pos, tok) = pop_tok(c)?;
+    let offset = pos.offset;
+    match tok {
+        Token::Eq         => Ok(Some((offset, BinOp::Assign(None)))),
+        Token::Plus       => Ok(Some((offset, BinOp::Add))),
+        Token::Minus      => Ok(Some((offset, BinOp::Sub))),
+        Token::EqEq       => Ok(Some((offset, BinOp::Eq))),
+        Token::Le         => Ok(Some((offset, BinOp::Le))),
+        Token::Lt         => Ok(Some((offset, BinOp::Lt))),
+        Token::Ge         => Ok(Some((offset, BinOp::Ge))),
+        Token::Gt         => Ok(Some((offset, BinOp::Gt))),
+        Token::Ne         => Ok(Some((offset, BinOp::Ne))),
+        Token::ShiftLeft  => Ok(Some((offset, BinOp::ShiftLeft))),
+        Token::ShiftRight => Ok(Some((offset, BinOp::ShiftRight))),
+        Token::Ampersand  => Ok(Some((offset, BinOp::And))),
+        Token::Pipe       => Ok(Some((offset, BinOp::Or))),
+        Token::Caret      => Ok(Some((offset, BinOp::Xor))),
+        Token::Percent    => Ok(Some((offset, BinOp::Mod))),
+        Token::Slash      => Ok(Some((offset, BinOp::Div))),
+        Token::Asterisk   => Ok(Some((offset, BinOp::Mul))),
+        tok => {
+            // The next token isn't a chaining token... Rewind!
+            push_tok(c, (pos, tok));
+            Ok(None)
+        },
     }
 }
 
@@ -446,30 +506,17 @@ fn parse_op_exprs(
 ) -> Result<Vec<(BinOp, Expr)>, CompErr> {
     let mut op_exprs = vec!();
     loop {
-        let (pos, tok) = pop_tok(c)?;
-        let op = match tok {
-            Token::Eq         => BinOp::Assign,
-            Token::Plus       => BinOp::Add,
-            Token::Minus      => BinOp::Sub,
-            Token::EqEq       => BinOp::Eq,
-            Token::Le         => BinOp::Le,
-            Token::Lt         => BinOp::Lt,
-            Token::Ge         => BinOp::Ge,
-            Token::Gt         => BinOp::Gt,
-            Token::Ne         => BinOp::Ne,
-            Token::ShiftLeft  => BinOp::ShiftLeft,
-            Token::ShiftRight => BinOp::ShiftRight,
-            Token::Ampersand  => BinOp::And,
-            Token::Pipe       => BinOp::Or,
-            Token::Caret      => BinOp::Xor,
-            Token::Percent    => BinOp::Mod,
-            Token::Slash      => BinOp::Div,
-            Token::Asterisk   => BinOp::Mul,
-            tok => {
-                // The next token isn't a chaining token... Rewind!
-                push_tok(c, (pos, tok));
-                break;
+        let op = match parse_op(c)? {
+            Some((assign_offset, BinOp::Assign(_))) => {
+                // Handle =*, =+, =>=, etc
+                match parse_op(c)? {
+                    Some((op_offset, op)) if op_offset == assign_offset + 1 =>
+                        BinOp::Assign(Some(Box::new(op))),
+                    _ => BinOp::Assign(None),
+                }
             },
+            Some((_, op)) => op,
+            None          => break,
         };
         op_exprs.push((op, parse_expr_unchained(c)?));
     }

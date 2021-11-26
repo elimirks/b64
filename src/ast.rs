@@ -118,7 +118,7 @@ impl GetPos for Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinOp {
-    Assign,
+    Assign(Option<Box<BinOp>>),
     Add,
     Sub,
     Div,

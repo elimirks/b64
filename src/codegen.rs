@@ -311,7 +311,8 @@ fn gen_op_command(
         BinOp::Lt         => gen_op_cmp("setl", lhs_loc, rhs_loc),
         BinOp::Ge         => gen_op_cmp("setge", lhs_loc, rhs_loc),
         BinOp::Gt         => gen_op_cmp("setg", lhs_loc, rhs_loc),
-        BinOp::Assign     => panic!("Assignments should be parsed differently"),
+        BinOp::Assign(_)  =>
+            panic!("Assignments should not be parsed as regular binop exprs"),
     }
 }
 

@@ -7,12 +7,12 @@ strlen(s) {
     while (1) {
         auto clen;
         clen = charlen(*s);
-        len = len + clen;
+        len =+ clen;
         if (clen < 8) {
             break;
         }
 
-        s = s + 8;
+        s =+ 8;
     }
     return(len);
 }
@@ -30,8 +30,8 @@ putstr(s) {
 charlen(c) {
     auto len 0;
     while (c) {
-        c = c >> 8;
-        len = len + 1;
+        c =>> 8;
+        len =+ 1;
     }
     return(len);
 }
@@ -66,12 +66,12 @@ putnum(n) {
 
     while (n != 0) {
         *top = n % 10;
-        n = n / 10;
-        top = top + 8;
+        n =/ 10;
+        top =+ 8;
     }
 
     while (top != numstack) {
-        top = top - 8;
+        top =- 8;
         putcharSingle(*top + '0');
     }
 }
