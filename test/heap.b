@@ -19,4 +19,7 @@ main() {
 
     data3 = malloc(1);
     printHeapMeta();
+
+    data3 = realloc(data3, 3);
+    printHeapMeta();
 }

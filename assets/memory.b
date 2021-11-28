@@ -1,9 +1,8 @@
 _heapBegin 0;
 _heapEnd 0;
 
-/*
+/**
  * Allocates the given number of quads (64 bit values)
- * Inefficient algorithm... but it's fine for now
  */
 malloc(count) {
     extrn _heapBegin, _heapEnd;
@@ -48,7 +47,7 @@ malloc(count) {
     }
 }
 
-/*
+/**
  * Frees the given address from the heap.
  */
 free(addr) {
@@ -56,7 +55,35 @@ free(addr) {
     addr[-1] =^ 1;
 }
 
-/* Used for debugging. Prints info about the current heap allocation */
+/**
+ * Reallocates the given address to a new size.
+ * This will _always_ copy the data.
+ * @param count The number of quads to reserve
+ */
+realloc(addr, count) {
+    auto oldCount, newAddr;
+    /* >> 1 to trim the occupied bit, >> 3 to divide by 8 */
+    oldCount = addr[-1] >> 4;
+    newAddr = malloc(count);
+    memmove(newAddr, addr, oldCount);
+    free(addr);
+    return(newAddr);
+}
+
+/*
+ * Copies data from the vector at src to the vector at dest.
+ * @param count The number of quads to copy
+ */
+memmove(dest, src, count) {
+    while (--count >= 0) {
+        dest[count] = src[count];
+    }
+}
+
+/**
+ * Prints info about the current heap allocation.
+ * It's mainly useful for debugging.
+ */
 printHeapMeta() {
     extrn _heapBegin;
     if (_heapBegin == 0) {
