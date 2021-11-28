@@ -2,12 +2,15 @@ mod ast;
 mod codegen;
 mod memory;
 mod parser;
+mod test;
 mod tokenizer;
 
 use std::fs;
 use std::io;
 use std::env;
 use std::process::{Command, Stdio};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use parser::*;
 use codegen::generate;
@@ -21,38 +24,12 @@ struct Opts {
 
 fn main() {
     let opts = parse_opts();
-    let parse_result = parse_or_die(&opts.inputs);
 
     if opts.asm {
+        let parse_result = parse_or_die(&opts.inputs);
         let mut stdout = io::stdout();
         generate(&parse_result, &mut stdout);
     } else {
-        let tmp_obj_path = "/tmp/b64.o";
-
-        let mut as_process = Command::new("as")
-            .stdin(Stdio::piped())
-            .arg("-o")
-            .arg(tmp_obj_path)
-            .spawn()
-            .expect("Failed running the GNU Assembler");
-
-        // Stream the assembly code straight into GNU assembler
-        generate(&parse_result, &mut as_process.stdin.as_ref().unwrap());
-
-        match as_process.wait() {
-            Ok(status) => if !status.success() {
-                let code = match status.code() {
-                    Some(code) => code,
-                    None       => 1,
-                };
-                std::process::exit(code);
-            },
-            Err(message) => {
-                println!("Failed running GNU Assembler: {}", message);
-                std::process::exit(1);
-            },
-        }
-
         let output_path = if opts.run {
             "/tmp/b64.bin".to_string()
         } else {
@@ -62,22 +39,7 @@ fn main() {
             }
         };
 
-        let ld_status = Command::new("ld")
-            .arg(tmp_obj_path)
-            .arg("-o")
-            .arg(&output_path)
-            .status()
-            .expect("Failed running GNU Linker");
-
-        if !ld_status.success() {
-            let code = match ld_status.code() {
-                Some(code) => code,
-                None       => 1,
-            };
-            std::process::exit(code);
-        }
-
-        fs::remove_file(tmp_obj_path).unwrap();
+        compile(&opts.inputs, &output_path);
 
         if opts.run {
             let prog_status = Command::new(&output_path)
@@ -91,6 +53,56 @@ fn main() {
                 _          => 1,
             });
         }
+    }
+}
+
+fn compile(input_paths: &Vec<String>, output_path: &String) {
+    let mut hasher = DefaultHasher::new();
+    input_paths.hash(&mut hasher);
+    let run_hash = hasher.finish();
+
+    let tmp_obj_path = format!("/tmp/b64_{}.o", run_hash);
+
+    let mut as_process = Command::new("as")
+        .stdin(Stdio::piped())
+        .arg("-o")
+        .arg(&tmp_obj_path)
+        .spawn()
+        .expect("Failed running the GNU Assembler");
+
+    let parse_result = parse_or_die(&input_paths);
+    // Stream the assembly code straight into GNU assembler
+    generate(&parse_result, &mut as_process.stdin.as_ref().unwrap());
+
+    match as_process.wait() {
+        Ok(status) => if !status.success() {
+            let code = match status.code() {
+                Some(code) => code,
+                None       => 1,
+            };
+            std::process::exit(code);
+        },
+        Err(message) => {
+            println!("Failed running GNU Assembler: {}", message);
+            std::process::exit(1);
+        },
+    }
+
+    let ld_status = Command::new("ld")
+        .arg(&tmp_obj_path)
+        .arg("-o")
+        .arg(&output_path)
+        .status()
+        .expect("Failed running GNU Linker");
+
+    if !ld_status.success() {
+        let code = match ld_status.code() {
+            Some(code) => code,
+            None       => 1,
+        };
+        std::process::exit(code);
+    } else {
+        fs::remove_file(tmp_obj_path).unwrap();
     }
 }
 
