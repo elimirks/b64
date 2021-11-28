@@ -1,5 +1,4 @@
 main() {
-    extrn heapBegin, heapEnd;
     auto data1, data2, data3;
 
     data1 = malloc(4);

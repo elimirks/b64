@@ -82,7 +82,7 @@ pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
             get_tok_int(c, 8)
         },
         Some(ch) => {
-            if ch.is_alphabetic() {
+            if ch == '_' || ch.is_alphabetic() {
                 Ok(get_tok_word(c))
             } else if ch.is_numeric() {
                 get_tok_int(c, 10)
@@ -353,7 +353,8 @@ fn get_tok_word(c: &mut ParseContext) -> (Pos, Token) {
 fn alphanumeric_slice(slice: &[char], offset: usize) -> &[char] {
     let mut len = 0;
     while offset + len < slice.len() {
-        if slice[offset + len].is_alphanumeric() {
+        let c = slice[offset + len];
+        if c.is_alphanumeric() || c == '_' {
             len += 1;
         } else {
             break;
