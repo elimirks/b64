@@ -40,7 +40,7 @@ In the B manual it also mentions `*e` for EOF. Since there is no EOF char in ASC
 ### Logical vs bitwise operators
 There are no logical `&&` or `||` operators like in C. However, using the `==`, `!=`, `>=`, `<=`, `>`, or `<` operators will always return `0` or `1`. So you can us the bitwise `&` and `|` operators instead.
 
-In C, this expression would be true: `3 && 1`. But this would be false: `3 & 1`. If you want to replicate the behavior of `&&` for integers, you must do `(3 != 0) & (1 != 0)`.
+In C, this expression would be true: `2 && 1`. But this would be false: `2 & 1`. If you want to replicate the behavior of `&&` for integers, you must do `(2 != 0) & (1 != 0)`.
 ### Assignment combo operators
 The `+=`, `-=`, ..., operators in C are written as `=+`, `=-`, ...
 

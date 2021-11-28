@@ -558,16 +558,8 @@ fn gen_reference(
     match c.find_in_scope(name) {
         Some(ScopeEntry::Var(Loc::Stack(offset))) => {
             let dest_reg = Reg::Rax;
-            let mut instructions = ll!(format!("movq %rbp,%{}", dest_reg));
-
-            if *offset < 0 {
-                instructions.push_back(format!(
-                    "subq ${},%{}", 8 * -offset, dest_reg));
-            } else if *offset > 0 {
-                instructions.push_back(format!(
-                    "addq ${},%{}", 8 * offset, dest_reg));
-            }
-
+            let instructions = ll!(format!(
+                "leaq {}(%rbp),%{}", 8 * offset, dest_reg));
             Ok((instructions, Loc::Register(dest_reg), RegSet::of(dest_reg)))
         },
         Some(ScopeEntry::Var(other)) => CompErr::err(pos, format!(
@@ -584,17 +576,23 @@ fn gen_dereference(
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     let (mut instructions, target_loc, mut used_registers) = gen_expr(c, expr)?;
 
-    let dest_reg = match used_registers.first() {
-        Some(reg) => reg,
-        None => {
-            used_registers = used_registers.with(Reg::Rax);
-            Reg::Rax
+    let dest_reg = match target_loc {
+        // Reuse the target register
+        Loc::Register(dest_reg) => dest_reg,
+        _ => {
+            let new_reg = match used_registers.first() {
+                Some(reg) => reg,
+                None => {
+                    used_registers = used_registers.with(Reg::Rax);
+                    Reg::Rax
+                },
+            };
+            instructions.push_back(format!("movq {},%{}", target_loc, new_reg));
+            new_reg
         },
     };
 
-    instructions.push_back(format!("movq {},%{}", target_loc, dest_reg));
     instructions.push_back(format!("movq (%{}),%{}", dest_reg, dest_reg));
-
     Ok((instructions, Loc::Register(dest_reg), used_registers))
 }
 

@@ -453,7 +453,7 @@ fn join_assign_exprs(
                 Some(post_op) => Expr::BinOperator(
                     pos.clone(),
                     *post_op,
-                    lhs.clone(),
+                    Box::new(Expr::Dereference(pos.clone(), lhs.clone())),
                     Box::new(rhs_expr)
                 ),
                 None => rhs_expr
