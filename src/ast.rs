@@ -137,6 +137,12 @@ pub enum BinOp {
     Xor,
 }
 
+impl BinOp {
+    pub fn assign(nested: BinOp) -> BinOp {
+        BinOp::Assign(Some(Box::new(nested)))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
     Increment,

@@ -472,33 +472,48 @@ fn join_assign_exprs(
 
 fn parse_op(
     c: &mut ParseContext
-) -> Result<Option<(usize, BinOp)>, CompErr> {
+) -> Result<Option<BinOp>, CompErr> {
     let (pos, tok) = pop_tok(c)?;
-    let offset = pos.offset;
-    match tok {
-        Token::Eq         => Ok(Some((offset, BinOp::Assign(None)))),
-        Token::Plus       => Ok(Some((offset, BinOp::Add))),
-        Token::Minus      => Ok(Some((offset, BinOp::Sub))),
-        Token::EqEq       => Ok(Some((offset, BinOp::Eq))),
-        Token::Le         => Ok(Some((offset, BinOp::Le))),
-        Token::Lt         => Ok(Some((offset, BinOp::Lt))),
-        Token::Ge         => Ok(Some((offset, BinOp::Ge))),
-        Token::Gt         => Ok(Some((offset, BinOp::Gt))),
-        Token::Ne         => Ok(Some((offset, BinOp::Ne))),
-        Token::ShiftLeft  => Ok(Some((offset, BinOp::ShiftLeft))),
-        Token::ShiftRight => Ok(Some((offset, BinOp::ShiftRight))),
-        Token::Ampersand  => Ok(Some((offset, BinOp::And))),
-        Token::Pipe       => Ok(Some((offset, BinOp::Or))),
-        Token::Caret      => Ok(Some((offset, BinOp::Xor))),
-        Token::Percent    => Ok(Some((offset, BinOp::Mod))),
-        Token::Slash      => Ok(Some((offset, BinOp::Div))),
-        Token::Asterisk   => Ok(Some((offset, BinOp::Mul))),
+    Ok(match tok {
+        Token::EqEq         => Some(BinOp::Eq),
+        Token::Eq           => Some(BinOp::Assign(None)),
+        Token::EqShiftRight => Some(BinOp::assign(BinOp::ShiftRight)),
+        Token::EqGe         => Some(BinOp::assign(BinOp::Ge)),
+        Token::EqShiftLeft  => Some(BinOp::assign(BinOp::ShiftLeft)),
+        Token::EqLe         => Some(BinOp::assign(BinOp::Le)),
+        Token::EqNe         => Some(BinOp::assign(BinOp::Ne)),
+        Token::EqEqEq       => Some(BinOp::assign(BinOp::Eq)),
+        Token::EqPlus       => Some(BinOp::assign(BinOp::Add)),
+        Token::EqMinus      => Some(BinOp::assign(BinOp::Sub)),
+        Token::EqLt         => Some(BinOp::assign(BinOp::Lt)),
+        Token::EqGt         => Some(BinOp::assign(BinOp::Gt)),
+        Token::EqAmpersand  => Some(BinOp::assign(BinOp::And)),
+        Token::EqPipe       => Some(BinOp::assign(BinOp::Or)),
+        Token::EqCaret      => Some(BinOp::assign(BinOp::Xor)),
+        Token::EqPercent    => Some(BinOp::assign(BinOp::Mod)),
+        Token::EqSlash      => Some(BinOp::assign(BinOp::Div)),
+        Token::EqAsterisk   => Some(BinOp::assign(BinOp::Mul)),
+        Token::Plus         => Some(BinOp::Add),
+        Token::Minus        => Some(BinOp::Sub),
+        Token::Le           => Some(BinOp::Le),
+        Token::Lt           => Some(BinOp::Lt),
+        Token::Ge           => Some(BinOp::Ge),
+        Token::Gt           => Some(BinOp::Gt),
+        Token::Ne           => Some(BinOp::Ne),
+        Token::ShiftLeft    => Some(BinOp::ShiftLeft),
+        Token::ShiftRight   => Some(BinOp::ShiftRight),
+        Token::Ampersand    => Some(BinOp::And),
+        Token::Pipe         => Some(BinOp::Or),
+        Token::Caret        => Some(BinOp::Xor),
+        Token::Percent      => Some(BinOp::Mod),
+        Token::Slash        => Some(BinOp::Div),
+        Token::Asterisk     => Some(BinOp::Mul),
         tok => {
             // The next token isn't a chaining token... Rewind!
             push_tok(c, (pos, tok));
-            Ok(None)
+            None
         },
-    }
+    })
 }
 
 fn parse_op_exprs(
@@ -507,16 +522,8 @@ fn parse_op_exprs(
     let mut op_exprs = vec!();
     loop {
         let op = match parse_op(c)? {
-            Some((assign_offset, BinOp::Assign(_))) => {
-                // Handle =*, =+, =>=, etc
-                match parse_op(c)? {
-                    Some((op_offset, op)) if op_offset == assign_offset + 1 =>
-                        BinOp::Assign(Some(Box::new(op))),
-                    _ => BinOp::Assign(None),
-                }
-            },
-            Some((_, op)) => op,
-            None          => break,
+            Some(op) => op,
+            None     => break,
         };
         op_exprs.push((op, parse_expr_unchained(c)?));
     }

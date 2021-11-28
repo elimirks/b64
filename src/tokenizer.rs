@@ -46,8 +46,13 @@ pub enum Token {
     Le,
     Ge,
     Ne,
-    Eq,
-    EqEq,
+    // For the slew of different assignment operators
+    Eq         , EqEq       , EqEqEq      ,
+    EqPlus     , EqMinus    , EqLe        ,
+    EqLt       , EqGe       , EqGt        ,
+    EqNe       , EqShiftLeft, EqShiftRight,
+    EqAmpersand, EqPipe     , EqCaret     ,
+    EqPercent  , EqSlash    , EqAsterisk  ,
 }
 
 // Returns false if it failed to parse the given token
@@ -85,6 +90,9 @@ pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
                 get_tok_char(c)
             } else if ch == '\"' {
                 get_tok_str(c)
+            } else if ch == '=' {
+                // Handle '=' differently because of the chaining rule
+                Ok(get_tok_equals(c))
             } else {
                 get_tok_symbol(c)
             }
@@ -116,13 +124,11 @@ macro_rules! multi_tok {
 fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
     c.offset += 1;
-    match c.content[c.offset - 1] as char {
+    match c.content[c.offset - 1] {
         '+' => multi_tok!(c, pos, Token::Plus,
                           '+', Token::PlusPlus),
         '-' => multi_tok!(c, pos, Token::Minus,
                           '-', Token::MinusMinus),
-        '=' => multi_tok!(c, pos, Token::Eq,
-                          '=', Token::EqEq),
         '>' => multi_tok!(c, pos, Token::Gt,
                           '>', Token::ShiftRight,
                           '=', Token::Ge),
@@ -153,6 +159,38 @@ fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
             CompErr::err(&pos, format!("Invalid token: {}", other))
         }
     }
+}
+
+// Assumes the character at the current point is =
+fn get_tok_equals(c: &mut ParseContext) -> (Pos, Token) {
+    // Peek at the next 2 chars
+    let c1 = c.content.get(c.offset + 1).unwrap_or(&' ');
+    let c2 = c.content.get(c.offset + 2).unwrap_or(&' ');
+
+    let (len, tok) = match (c1, c2) {
+        ('>', '>') => (3, Token::EqShiftRight),
+        ('>', '=') => (3, Token::EqGe),
+        ('<', '<') => (3, Token::EqShiftLeft),
+        ('<', '=') => (3, Token::EqLe),
+        ('!', '=') => (3, Token::EqNe),
+        ('=', '=') => (3, Token::EqEqEq),
+        ('=', _)   => (2, Token::EqEq),
+        ('+', _)   => (2, Token::EqPlus),
+        ('-', _)   => (2, Token::EqMinus),
+        ('<', _)   => (2, Token::EqLt),
+        ('>', _)   => (2, Token::EqGt),
+        ('&', _)   => (2, Token::EqAmpersand),
+        ('|', _)   => (2, Token::EqPipe),
+        ('^', _)   => (2, Token::EqCaret),
+        ('%', _)   => (2, Token::EqPercent),
+        ('/', _)   => (2, Token::EqSlash),
+        ('*', _)   => (2, Token::EqAsterisk),
+        _          => (1, Token::Eq),
+    };
+
+    let pos = c.pos();
+    c.offset += len;
+    (pos, tok)
 }
 
 fn get_tok_int(
