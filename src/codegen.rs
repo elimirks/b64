@@ -1033,6 +1033,7 @@ fn root_prepass(
                 scope.insert(name.clone(),
                              ScopeEntry::Var(Loc::Data(name.clone())));
             },
+            RootStatement::Import(_, _) => {},
         }
     }
     Ok((scope, root_vars))
@@ -1107,14 +1108,16 @@ fn generate_start(
 }
 
 fn generate_strings(
-    strings: &Vec<(usize, Vec<Vec<i64>>)>, w: &mut dyn Write
+    strings: &Vec<(usize, Vec<Vec<char>>)>, w: &mut dyn Write
 ) -> Result<(), std::io::Error> {
     writeln!(w, ".text")?;
     // Prevent constant strings from being modified
     writeln!(w, ".section .rodata")?;
     for (file_id, file_strings) in strings {
-        for (string_index, string_quads) in file_strings.iter().enumerate() {
+        for (string_index, string_chars) in file_strings.iter().enumerate() {
             let label = label_for_string_id(*file_id, string_index);
+            // TODO: Print nicely instead of packing into quads
+            let string_quads = pack_chars(string_chars);
             write!(w, "{}:\n    .quad {}", label, string_quads[0])?;
             for i in 1..string_quads.len() {
                 write!(w, ",{}", string_quads[i])?;
@@ -1162,6 +1165,8 @@ fn gen(
             },
             // Vars are generated in the prepass
             RootStatement::Variable(_, _) => {},
+            RootStatement::Import(_, _) =>
+                panic!("Imports should be handled during parsing"),
         }
     }
 

@@ -1,12 +1,15 @@
 use crate::ast::*;
 use crate::tokenizer::*;
 
+use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+
 pub struct ParseResult {
     // Stored in order of file_id (in Pos)
     // Stores (file_name, file_contents)
     pub file_contents: Vec<(String, String)>,
     // Stores (file_id, strings_vec)
-    pub strings: Vec<(usize, Vec<Vec<i64>>)>,
+    pub strings: Vec<(usize, Vec<Vec<char>>)>,
     pub root_statements: Vec<RootStatement>,
     pub error: Option<CompErr>,
 }
@@ -17,7 +20,7 @@ pub struct ParseContext {
     pub offset: usize,
     pub file_id: usize,
     // Tracks the "floating" string literals that aren't assigned to vectors
-    pub strings: Vec<Vec<i64>>,
+    pub strings: Vec<Vec<char>>,
     // Used for the tokenizer stack
     pub tok_stack: Vec<(Pos, Token)>,
 }
@@ -49,14 +52,41 @@ fn parse_global_var(
     Ok(RootStatement::Variable(pos, var))
 }
 
+// Packs the given chars into 64 bit wide chars.
+// Return value will always be null terminated.
+// Expects all chars to be valid!
+pub fn pack_chars(chars: &Vec<char>) -> Vec<i64> {
+    let mut values = vec!();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let mut char_index = 0;
+        let mut value = 0;
+        while char_index < 8 && i < chars.len() {
+            value += (chars[i] as i64) << (char_index * 8);
+            char_index += 1;
+            i += 1;
+        }
+        values.push(value);
+    }
+    // Ensure null termination
+    if values.is_empty() || (values.last().unwrap() >> (7 * 8)) != 0i64 {
+        values.push(0);
+    }
+    values
+}
+
 fn parse_vec_values(c: &mut ParseContext) -> Result<Vec<i64>, CompErr> {
     let mut values = vec!();
 
     match pop_tok(c)? {
-        (_, Token::Value(value)) => {
+        (_, Token::Int(value)) => {
             values.push(value);
         },
-        (_, Token::Str(values)) => return Ok(values),
+        (_, Token::Char(chars)) => {
+            values.push(pack_chars(&chars)[0]);
+        },
+        (_, Token::Str(chars)) => return Ok(pack_chars(&chars)),
         other => {
             push_tok(c, other);
             return Ok(values);
@@ -67,8 +97,11 @@ fn parse_vec_values(c: &mut ParseContext) -> Result<Vec<i64>, CompErr> {
         match pop_tok(c)? {
             (comma_pos, Token::Comma) => {
                 match pop_tok(c)? {
-                    (_, Token::Value(value)) => {
+                    (_, Token::Int(value)) => {
                         values.push(value);
+                    },
+                    (_, Token::Char(chars)) => {
+                        values.push(pack_chars(&chars)[0]);
                     },
                     other => {
                         // Unfortunately, B has ambiguous grammar...
@@ -92,7 +125,7 @@ fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
     match pop_tok(c)? {
        (_, Token::LBracket) => {
            let given_vec_size = match pop_tok(c)? {
-               (_, Token::Value(max_index)) if max_index >= 0 => {
+               (_, Token::Int(max_index)) if max_index >= 0 => {
                    parse_tok(c, Token::RBracket)?;
                    max_index + 1
                },
@@ -108,8 +141,11 @@ fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
            let vec_size = std::cmp::max(given_vec_size, vec_values.len() as i64);
            Ok(Var::Vec(name, vec_size, vec_values))
         },
-        (_, Token::Value(value)) => {
+        (_, Token::Int(value)) => {
             Ok(Var::Single(name, Some(value)))
+        },
+        (_, Token::Char(chars)) => {
+            Ok(Var::Single(name, Some(pack_chars(&chars)[0])))
         },
         other => {
             push_tok(c, other);
@@ -118,11 +154,25 @@ fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
     }
 }
 
+// Expects the @import token to have been parsed
+fn parse_import(
+    c: &mut ParseContext
+) -> Result<RootStatement, CompErr> {
+    match pop_tok(c)? {
+        (pos, Token::Str(chars)) => {
+            let path: String = chars.into_iter().collect();
+            parse_tok(c, Token::Semicolon)?;
+            Ok(RootStatement::Import(pos, path))
+        },
+        (pos, tok) => CompErr::err(&c.pos(), format!(
+            "String expected. {:?} given", tok)),
+    }
+}
+
 fn parse_root_statement(
     c: &mut ParseContext
 ) -> Result<Option<RootStatement>, CompErr> {
     match pop_tok(c)? {
-        // Root statements always begin with an id
         (_, Token::Id(id)) => {
             let (pos, tok) = pop_tok(c)?;
 
@@ -137,6 +187,7 @@ fn parse_root_statement(
                 },
             }
         },
+        (_, Token::Import) => Ok(Some(parse_import(c)?)),
         (_, Token::Eof) => Ok(None),
         (pos, tok) => CompErr::err(&pos, format!(
             "Expected id. {:?} found", tok)),
@@ -570,7 +621,8 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
 
     match tok {
         Token::Id(id) => parse_expr_id_unchained(c, pos, id),
-        Token::Value(value) => Ok(Expr::Int(pos, value)),
+        Token::Int(value) => Ok(Expr::Int(pos, value)),
+        Token::Char(chars) => Ok(Expr::Int(pos, pack_chars(&chars)[0])),
         Token::Str(value) => {
             c.strings.push(value);
             Ok(Expr::Str(pos, (c.file_id, c.strings.len() - 1)))
@@ -693,7 +745,7 @@ pub fn print_comp_error(parse_result: &ParseResult, err: &CompErr) {
 
 fn parse_content(
     file_id: usize, content: &String
-) -> Result<(Vec<RootStatement>, Vec<Vec<i64>>), CompErr> {
+) -> Result<(Vec<RootStatement>, Vec<Vec<char>>), CompErr> {
     let mut c = ParseContext {
         content: content.chars().collect(),
         offset: 0,
@@ -712,6 +764,17 @@ fn parse_content(
     Ok((roots, c.strings))
 }
 
+fn as_relative_path(base: &PathBuf, imp: &PathBuf) -> PathBuf {
+    if imp.is_absolute() {
+        imp.clone()
+    } else {
+        match base.parent() {
+            Some(parent) => parent.join(imp).canonicalize().unwrap(),
+            None         => imp.clone(),
+        }
+    }
+}
+
 pub fn parse_files(paths: &Vec<String>) -> ParseResult {
     let mut result = ParseResult {
         file_contents: vec!(),
@@ -720,22 +783,49 @@ pub fn parse_files(paths: &Vec<String>) -> ParseResult {
         error: None,
     };
 
-    for (file_id, path) in paths.iter().enumerate() {
-        let content = std::fs::read_to_string(path)
-            .expect(format!("Failed reading {}", path).as_str());
+    let mut parsed_set: HashSet<PathBuf> = HashSet::new();
+    let mut parse_stack: Vec<PathBuf> = vec!();
+    for path in paths {
+        parse_stack.push(
+            Path::new(path).canonicalize()
+                .expect(format!("Invalid path: {}", path).as_str()));
+    }
+
+    let mut file_id = 0;
+    while !parse_stack.is_empty() {
+        let path = parse_stack.pop().unwrap();
+        if parsed_set.contains(&path) {
+            continue;
+        }
+        parsed_set.insert(path.clone());
+
+        let path_str = path.to_str().unwrap().to_string();
+
+        let content = std::fs::read_to_string(&path)
+            .expect(format!("Failed reading {}", path_str).as_str());
 
         match parse_content(file_id, &content) {
-            Ok((mut statements, strings)) => {
-                result.root_statements.append(&mut statements);
-                result.file_contents.push((path.to_string(), content));
+            Ok((statements, strings)) => {
+                for s in statements {
+                    match s {
+                        RootStatement::Import(_, imp) => {
+                            let imp_path = Path::new(&imp).to_path_buf();
+                            parse_stack.push(as_relative_path(&path, &imp_path));
+                        },
+                        s => result.root_statements.push(s)
+                    };
+                }
+
+                result.file_contents.push((path_str, content));
                 result.strings.push((file_id, strings));
             },
             Err(error) => {
                 result.error = Some(error);
-                result.file_contents.push((path.to_string(), content));
+                result.file_contents.push((path_str, content));
                 break;
             },
         }
+        file_id += 1;
     }
 
     result

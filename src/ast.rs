@@ -47,6 +47,7 @@ pub trait GetPos {
 pub enum RootStatement {
     Function(Pos, String, Vec<String>, Statement),
     Variable(Pos, Var),
+    Import(Pos, String),
 }
 
 #[derive(Debug)]

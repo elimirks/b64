@@ -5,8 +5,10 @@ use crate::ast::{Pos, CompErr};
 pub enum Token {
     Id(String),
     Label(String),
-    Str(Vec<i64>),
-    Value(i64),
+    Str(Vec<char>),
+    Char(Vec<char>),
+    Int(i64),
+    Import,
     Return,
     Auto,
     Extern,
@@ -93,6 +95,8 @@ pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
             } else if ch == '=' {
                 // Handle '=' differently because of the chaining rule
                 Ok(get_tok_equals(c))
+            } else if ch == '@' {
+                get_tok_meta(c)
             } else {
                 get_tok_symbol(c)
             }
@@ -161,6 +165,24 @@ fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     }
 }
 
+// Assumes the @ token has been parsed
+// Returns a metaprogramming token
+fn get_tok_meta(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
+    let next_chars = alphanumeric_slice(&c.content, c.offset + 1);
+    let next_word: String = next_chars.into_iter().collect();
+    let pos = c.pos();
+
+    match next_word.as_str() {
+        "import" => {
+            c.offset += 1 + next_chars.len();
+            Ok((c.pos(), Token::Import))
+        },
+        other => {
+            CompErr::err(&pos, format!("Invalid token: @{}", other))
+        },
+    }
+}
+
 // Assumes the character at the current point is =
 fn get_tok_equals(c: &mut ParseContext) -> (Pos, Token) {
     // Peek at the next 2 chars
@@ -203,7 +225,7 @@ fn get_tok_int(
     match i64::from_str_radix(&str_word, radix) {
         Ok(num) => {
             c.offset += current_word.len();
-            Ok((pos, Token::Value(num)))
+            Ok((pos, Token::Int(num)))
         },
         _ => CompErr::err(&pos, format!(
             "Invalid int literal: {}", str_word)),
@@ -212,28 +234,10 @@ fn get_tok_int(
 
 fn get_tok_str(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
-    let mut values = Vec::<i64>::new();
-
     c.offset += 1;
-    while c.offset < c.content.len() && c.content[c.offset] != '\"' {
-        values.push(get_inner_char(c, '\"')?);
-    }
-
-    // Check if the final char ends in 00
-    // Ensures that string literals are null terminates
-    match values.last() {
-        Some(value) => if (*value as u64) & (0xff << 56) != 0 {
-            values.push(0);
-        },
-        None => values.push(0),
-    }
-
-    if c.offset >= c.content.len() {
-        CompErr::err(&pos, "Hit EOF while parsing string".to_string())
-    } else {
-        c.offset += 1;
-        Ok((pos, Token::Str(values)))
-    }
+    let values = get_inside_quotes(c, '\"')?;
+    c.offset += 1;
+    Ok((pos, Token::Str(values)))
 }
 
 /**
@@ -243,47 +247,44 @@ fn get_tok_str(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
     c.offset += 1;
-    let value = get_inner_char(c, '\'')?;
+    let chars = get_inside_quotes(c, '\'')?;
 
-    if c.offset >= c.content.len() {
-        CompErr::err(&pos, "Hit EOF while parsing char".to_string())
-    } else if c.content[c.offset] != '\'' {
-        CompErr::err(&c.pos(), "Expected closing quote".to_string())
+    if chars.len() > 8 {
+        CompErr::err(&pos, "A wide char may be at most 8 bytes".to_string())
     } else {
         c.offset += 1;
-        Ok((pos, Token::Value(value)))
+        Ok((pos, Token::Char(chars)))
     }
 }
 
-// Gets char enclosed in quotes. Packs 8 8-bit chars into a 64 bit value
-fn get_inner_char(
+// Gets chars enclosed in the given terminal character
+fn get_inside_quotes(
     c: &mut ParseContext, terminal: char
-) -> Result<i64, CompErr> {
+) -> Result<Vec<char>, CompErr> {
     let mut i = c.offset;
-    // Index of the char literal, NOT of the content
-    let mut index = 0;
-    let mut value: i64 = 0;
+    let mut chars = vec!();
 
-    while i < c.content.len() && c.content[i] != terminal && index < 8 {
-        let ichar = match c.content[i] {
+    while i < c.content.len() && c.content[i] != terminal {
+        let chr = match c.content[i] {
             '*' => {
                 i += 1;
                 // Hit EOF while parsing char
                 if i >= c.content.len() {
-                    break;
+                    return CompErr::err(
+                        &c.pos(), "Hit EOF while parsing char".to_string());
                 }
 
                 match c.content[i] {
-                    '*'  => '*' as i64,
-                    'n'  => '\n' as i64,
-                    '0'  => 0,
-                    't'  => '\t' as i64,
-                    '\'' => '\'' as i64,
-                    '\"' => '\"' as i64,
+                    '*'  => '*',
+                    'n'  => '\n',
+                    '0'  => '\0',
+                    't'  => '\t',
+                    '\'' => '\'',
+                    '\"' => '\"',
                     // For compliance with the B manual
                     // These aren't ever necessary in code compiled with b64
-                    '{'  => '{' as i64,
-                    '}'  => '}' as i64,
+                    '{'  => '{',
+                    '}'  => '}',
                     other => return CompErr::err(&c.pos(), format!(
                         "Unknown escape char: {}", other)),
                 }
@@ -297,18 +298,15 @@ fn get_inner_char(
                         "b64 only supports ASCII chars".to_string());
                 }
 
-                ichar
+                chr
             },
         };
-
-        value += ichar << (index * 8);
-
-        index += 1;
         i += 1;
+        chars.push(chr);
     }
 
     c.offset = i;
-    Ok(value)
+    Ok(chars)
 }
 
 // Parsed word-like tokens. Includes keywords and IDs

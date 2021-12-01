@@ -40,6 +40,7 @@ fn test_extern() {
     )));
 }
 
+#[allow(dead_code)]
 fn run(inputs: Vec<String>) -> i32 {
     let mut hasher = DefaultHasher::new();
     inputs.hash(&mut hasher);
