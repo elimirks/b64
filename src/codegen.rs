@@ -202,6 +202,23 @@ fn gen_op_single(
      RegSet::empty())
 }
 
+fn gen_op_shift(
+    command: &str, lhs_loc: Loc, rhs_loc: Loc
+) -> (LinkedList<String>, Loc, RegSet) {
+    match rhs_loc {
+        rhs_loc @ Loc::Immediate(_) =>
+            gen_op_single(command, lhs_loc, rhs_loc),
+        _ => {
+            // Required to use %cl register for non immediates during shifts
+            let instructions = ll!(
+                format!("mov {},%rcx", rhs_loc),
+                format!("{} %cl,{}", command, lhs_loc));
+            let used_registers = RegSet::of(Reg::Rcx);
+            (instructions, lhs_loc, used_registers)
+        },
+    }
+}
+
 /**
  * Prepares sending an LHS and RHS to the FPU
  * @return (instructions, rhs_loc, used_registers)
@@ -300,8 +317,8 @@ fn gen_op_command(
         BinOp::Mod        => gen_op_mod(lhs_loc, rhs_loc),
         BinOp::Div        => gen_op_div(lhs_loc, rhs_loc),
         BinOp::Mul        => gen_op_mul(lhs_loc, rhs_loc),
-        BinOp::ShiftRight => gen_op_single("shr", lhs_loc, rhs_loc),
-        BinOp::ShiftLeft  => gen_op_single("shl", lhs_loc, rhs_loc),
+        BinOp::ShiftRight => gen_op_shift("shr", lhs_loc, rhs_loc),
+        BinOp::ShiftLeft  => gen_op_shift("shl", lhs_loc, rhs_loc),
         BinOp::And        => gen_op_single("andq", lhs_loc, rhs_loc),
         BinOp::Or         => gen_op_single("orq", lhs_loc, rhs_loc),
         BinOp::Xor        => gen_op_single("xorq", lhs_loc, rhs_loc),

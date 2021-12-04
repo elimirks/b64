@@ -164,7 +164,7 @@ fn parse_import(
             parse_tok(c, Token::Semicolon)?;
             Ok(RootStatement::Import(pos, path))
         },
-        (pos, tok) => CompErr::err(&c.pos(), format!(
+        (pos, tok) => CompErr::err(&pos, format!(
             "String expected. {:?} given", tok)),
     }
 }
