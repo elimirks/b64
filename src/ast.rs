@@ -119,7 +119,7 @@ impl GetPos for Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BinOp {
-    Assign(Option<Box<BinOp>>),
+    Assign(Option<Box<BinOp>>), // FIXME: This shouldn't need to be heap allocated
     Add,
     Sub,
     Div,
