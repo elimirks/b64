@@ -312,23 +312,22 @@ fn get_inside_quotes(
 // Parsed word-like tokens. Includes keywords and IDs
 fn get_tok_word(c: &mut ParseContext) -> (Pos, Token) {
     let pos = c.pos();
-    let current_word = alphanumeric_slice(&c.content, c.offset);
-    c.offset += current_word.len();
-    let str_word: String = current_word.into_iter().collect();
+    let slice = alphanumeric_slice(&c.content, c.offset);
+    c.offset += slice.len();
 
-    let tok = match str_word.as_str() {
-        "return" => Token::Return,
-        "auto"   => Token::Auto,
-        "extrn"  => Token::Extern,
-        "eof"    => Token::Eof,
-        "while"  => Token::While,
-        "if"     => Token::If,
-        "else"   => Token::Else,
-        "goto"   => Token::Goto,
-        "switch" => Token::Switch,
-        "break"  => Token::Break,
-        _        => {
-            let name = str_word.to_string();
+    let tok = match slice {
+        ['a', 'u', 't', 'o']           => Token::Auto,
+        ['b', 'r', 'e', 'a', 'k']      => Token::Break,
+        ['e', 'l', 's', 'e']           => Token::Else,
+        ['e', 'o', 'f']                => Token::Eof,
+        ['e', 'x', 't', 'r', 'n']      => Token::Extern,
+        ['g', 'o', 't', 'o']           => Token::Goto,
+        ['i', 'f']                     => Token::If,
+        ['r', 'e', 't', 'u', 'r', 'n'] => Token::Return,
+        ['s', 'w', 'i', 't', 'c', 'h'] => Token::Switch,
+        ['w', 'h', 'i', 'l', 'e']      => Token::While,
+        _ => {
+            let name: String = slice.into_iter().collect();
 
             match c.peek_char() {
                 Some(':') => {
@@ -363,14 +362,12 @@ fn alphanumeric_slice(slice: &[char], offset: usize) -> &[char] {
 
 // Parse any amount of whitespace, including comments
 fn consume_ws(c: &mut ParseContext) {
-    while !c.at_eof() {
-        match c.peek_char() {
-            Some(' ')  => c.offset += 1,
-            Some('\n') => c.offset += 1,
-            Some('/')  => {
-                if !consume_comment(c) {
-                    break;
-                }
+    while c.offset < c.content.len() {
+        match c.content[c.offset] {
+            ' '  => c.offset += 1,
+            '\n' => c.offset += 1,
+            '/' => if !consume_comment(c) {
+                break
             },
             _ => break,
         }
@@ -384,8 +381,7 @@ fn consume_ws(c: &mut ParseContext) {
 fn consume_comment(c: &mut ParseContext) -> bool {
     if c.offset + 1 >= c.content.len() {
         return false;
-    }
-    if c.content[c.offset + 1] as char != '*' {
+    } else if c.content[c.offset + 1] as char != '*' {
         return false;
     }
     c.offset += 2;
@@ -393,9 +389,9 @@ fn consume_comment(c: &mut ParseContext) -> bool {
     let mut one;
     let mut two = '\0';
 
-    while !c.at_eof() {
+    while c.offset < c.content.len() {
         one = two;
-        two = c.content[c.offset] as char;
+        two = c.content[c.offset];
         c.offset += 1;
 
         if one == '*' && two == '/' {
