@@ -1,6 +1,7 @@
 @import "../assets/stdlib.b";
 
-main() {
+show_strcmp() {
+    putstr("strcmp:*n");
     putnum(strcmp("aaaaaaaaac", "aaaaaaaaab"));
     putstr("*n");
     putnum(strcmp("", "eouotheusntaoeusntaehutsnahtoneuah"));
@@ -13,4 +14,8 @@ main() {
     putstr("*n");
     putnum(strcmp("z", "eouotheusntaoeusntaehutsnahtoneuah"));
     putstr("*n");
+}
+
+main() {
+    show_strcmp();
 }

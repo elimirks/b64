@@ -1,3 +1,8 @@
+@import "memory.b";
+
+/*
+ * Compares 2 strings. Return negative if "s1 < s2"
+ */
 strcmp(s1, s2) {
     auto i 0, delta;
 
@@ -14,17 +19,25 @@ strcmp(s1, s2) {
     return(charcmp(s1[i], s2[i]));
 }
 
+/*
+ * Compares 2 chars. Return negative if "c1 < c2"
+ */
 charcmp(c1, c2) {
     auto i 0, delta;
-
-    while (i < 8) {
-        delta = (c2 >> (i*8)) - (c1 >> (i*8));
+    while (i < 64) {
+        delta = (c2 >> i) - (c1 >> i);
         if (delta > 0) return(1);
         if (delta < 0) return(-1);
-        i =+ 1;
+        i =+ 8;
     }
     /* If we haven't returned by now, they're the same */
     return(0);
+}
+
+/*
+ * Returns a malloc'd new string!
+ */
+strcat(s1, s2) {
 }
 
 /**
@@ -73,7 +86,7 @@ putchar(c) {
 }
 
 /* Writes the first ASCII char of the given wide char to stdout */
-putcharSingle(c) {
+_putcharSingle(c) {
     syscall(1, 1, &c, 1);
 }
 
@@ -86,10 +99,10 @@ putnum(n) {
     top = numstack;
 
     if (n < 0) {
-        putcharSingle('-');
+        _putcharSingle('-');
         n = -n;
     } else if (n == 0) {
-        putcharSingle('0');
+        _putcharSingle('0');
         return;
     }
 
@@ -101,6 +114,56 @@ putnum(n) {
 
     while (top != numstack) {
         top =- 8;
-        putcharSingle(*top + '0');
+        _putcharSingle(*top + '0');
     }
+}
+
+/*
+ * Allocates a new string of the given number represented in decimal
+ */
+num2str(n) {
+    /* At most 19 indexes required, for the string "-9223372036854775808" */
+    auto charStack[19], stackTop;
+    stackTop = charStack;
+
+    auto str, len 0;
+    /* 3 quads = 24 bytes, enough to store the longest signed quad value */
+    str = malloc(3);
+    str[0] = 0;
+    str[1] = 0;
+    str[2] = 0;
+
+    if (n < 0) {
+        str[0] = '-';
+        len = 1;
+        n = -n;
+    } else if (n == 0) {
+        str[0] = '0';
+        return(str);
+    }
+
+    while (n != 0) {
+        *stackTop = (n % 10) + '0';
+        n =/ 10;
+        stackTop =+ 8;
+    }
+
+    while (charStack != stackTop) {
+        auto charIndex, strIndex;
+        strIndex = len / 8;
+        charIndex = len % 8;
+
+        len =+ 1;
+        stackTop =- 8;
+
+        putchar(*stackTop);
+        putchar(',');
+        putnum(charIndex);
+        putchar('*n');
+
+        /* FIXME: Why doesn't shift by 3 work here? */
+        /* str[strIndex] =| *stackTop << (charIndex << 3); */
+        str[strIndex] =| *stackTop << (charIndex * 8);
+    }
+    return(str);
 }

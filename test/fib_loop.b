@@ -16,5 +16,5 @@ fib(n) {
 }
 
 main() {
-    return(fib(12));
+    return(fib(12)); /* Should return 144 */
 }
