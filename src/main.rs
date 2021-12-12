@@ -4,6 +4,7 @@ mod memory;
 mod parser;
 mod test;
 mod tokenizer;
+mod util;
 
 use std::fs;
 use std::io;
@@ -163,8 +164,11 @@ fn print_usage(name: &String) {
 
 fn parse_or_die(inputs: &Vec<String>) -> ParseResult {
     let parse_result = parse_files(inputs);
-    if let Some(ref err) = parse_result.error {
+
+    for err in &parse_result.errors {
         print_comp_error(&parse_result, &err);
+    }
+    if !parse_result.errors.is_empty() {
         std::process::exit(1);
     }
     parse_result

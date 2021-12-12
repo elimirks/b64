@@ -1,8 +1,12 @@
+use crate::util::logical_cpu_count;
 use crate::ast::*;
 use crate::tokenizer::*;
 
-use std::path::{Path, PathBuf};
 use std::collections::HashSet;
+use std::ops::DerefMut;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 pub struct ParseResult {
     // Stored in order of file_id (in Pos)
@@ -11,7 +15,41 @@ pub struct ParseResult {
     // Stores (file_id, strings_vec)
     pub strings: Vec<(usize, Vec<Vec<char>>)>,
     pub root_statements: Vec<RootStatement>,
-    pub error: Option<CompErr>,
+    pub errors: Vec<CompErr>,
+}
+
+impl ParseResult {
+    fn new() -> ParseResult {
+        ParseResult {
+            file_contents: vec!(),
+            strings: vec!(),
+            root_statements: vec!(),
+            errors: vec!(),
+        }
+    }
+}
+
+struct ParseState {
+    result: ParseResult,
+    parse_stack: Vec<PathBuf>,
+    parsed_set: HashSet<PathBuf>,
+}
+
+impl ParseState {
+    fn new() -> ParseState {
+        ParseState {
+            result: ParseResult::new(),
+            parse_stack: vec!(),
+            parsed_set: HashSet::new(),
+        }
+    }
+
+    fn push_path_to_parse(&mut self, path: PathBuf) {
+        if !self.parsed_set.contains(&path) {
+            self.parsed_set.insert(path.clone());
+            self.parse_stack.push(path);
+        }
+    }
 }
 
 pub struct ParseContext {
@@ -750,7 +788,7 @@ fn parse_content(
     Ok((roots, c.strings))
 }
 
-fn as_relative_path(base: &PathBuf, imp: &PathBuf) -> PathBuf {
+fn relative_to_canonical_path(base: &PathBuf, imp: &PathBuf) -> PathBuf {
     if imp.is_absolute() {
         imp.clone()
     } else {
@@ -762,57 +800,100 @@ fn as_relative_path(base: &PathBuf, imp: &PathBuf) -> PathBuf {
 }
 
 pub fn parse_files(paths: &Vec<String>) -> ParseResult {
-    let mut result = ParseResult {
-        file_contents: vec!(),
-        root_statements: vec!(),
-        strings: vec!(),
-        error: None,
-    };
+    let parse_state_mutex = Arc::new(Mutex::new(ParseState::new()));
 
-    let mut parsed_set: HashSet<PathBuf> = HashSet::new();
-    let mut parse_stack: Vec<PathBuf> = vec!();
-    for path in paths {
-        parse_stack.push(
-            Path::new(path).canonicalize()
-                .expect(format!("Invalid path: {}", path).as_str()));
+    {
+        let mut guard = parse_state_mutex.lock().unwrap();
+        for path in paths {
+            guard.push_path_to_parse(
+                Path::new(path).canonicalize()
+                    .expect(format!("Invalid path: {}", path).as_str()));
+        }
     }
 
+    let thread_count = logical_cpu_count();
+
     let mut file_id = 0;
-    while !parse_stack.is_empty() {
-        let path = parse_stack.pop().unwrap();
-        if parsed_set.contains(&path) {
-            continue;
+    loop {
+        let paths = pop_path_batch(&parse_state_mutex, thread_count);
+        if paths.is_empty() {
+            break;
         }
-        parsed_set.insert(path.clone());
 
-        let path_str = path.to_str().unwrap().to_string();
+        let mut handles = Vec::with_capacity(thread_count);
 
-        let content = std::fs::read_to_string(&path)
-            .expect(format!("Failed reading {}", path_str).as_str());
-
-        match parse_content(file_id, &content) {
-            Ok((statements, strings)) => {
-                for s in statements {
-                    match s {
-                        RootStatement::Import(_, imp) => {
-                            let imp_path = Path::new(&imp).to_path_buf();
-                            parse_stack.push(as_relative_path(&path, &imp_path));
-                        },
-                        s => result.root_statements.push(s)
-                    };
-                }
-
-                result.file_contents.push((path_str, content));
-                result.strings.push((file_id, strings));
-            },
-            Err(error) => {
-                result.error = Some(error);
-                result.file_contents.push((path_str, content));
-                break;
-            },
+        for path in paths {
+            let mutex = parse_state_mutex.clone();
+            let th = thread::spawn(move || {
+                parse_file(file_id, path, mutex);
+            });
+            handles.push(th);
         }
+
+        // TODO: It would be better to wait until _any_ are done
+        // ... but this is fine for now
+        for th in handles {
+            th.join().unwrap();
+        }
+
         file_id += 1;
     }
 
-    result
+    // Nasty hack becuase you can't move out of a mutex
+    let mut final_result = ParseResult::new();
+    std::mem::swap(
+        &mut parse_state_mutex.lock().unwrap().deref_mut().result,
+        &mut final_result
+    );
+    final_result
+}
+
+fn pop_path_batch(
+    parse_state_mutex: &Arc<Mutex<ParseState>>,
+    max_num: usize
+) -> Vec<PathBuf> {
+    let mut paths = Vec::with_capacity(max_num);
+    let mut guard = parse_state_mutex.lock().unwrap();
+
+    for _ in 0..max_num {
+        match guard.parse_stack.pop() {
+            Some(path) => paths.push(path),
+            None       => break,
+        }
+    }
+    paths
+}
+
+fn parse_file(
+    file_id: usize,
+    path: PathBuf,
+    parse_state_mutex: Arc<Mutex<ParseState>>
+) {
+    let path_str = path.to_str().unwrap().to_string();
+    let content = std::fs::read_to_string(&path)
+        .expect(format!("Failed reading {}", path_str).as_str());
+
+    match parse_content(file_id, &content) {
+        Ok((statements, strings)) => {
+            let mut guard = parse_state_mutex.lock().unwrap();
+
+            for s in statements {
+                match s {
+                    RootStatement::Import(_, imp) => {
+                        let imp_path = Path::new(&imp).to_path_buf();
+                        guard.push_path_to_parse(relative_to_canonical_path(&path, &imp_path));
+                    },
+                    s => guard.result.root_statements.push(s)
+                };
+            }
+
+            guard.result.file_contents.push((path_str, content));
+            guard.result.strings.push((file_id, strings));
+        },
+        Err(error) => {
+            let mut guard = parse_state_mutex.lock().unwrap();
+            guard.result.errors.push(error);
+            guard.result.file_contents.push((path_str, content));
+        },
+    }
 }
