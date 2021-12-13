@@ -11,4 +11,7 @@ main() {
 
     putstr(num2str(-321));
     putstr("*n");
+
+    putnum(0 ? c : 0 ? 42 : 1337);
+    putstr("*n");
 }

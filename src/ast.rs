@@ -96,10 +96,12 @@ pub enum Expr {
     DerefAssignment(Pos, Box<Expr>, Box<Expr>),
     UnaryOperator(Pos, UnaryOp, Box<Expr>),
     BinOperator(Pos, BinOp, Box<Expr>, Box<Expr>),
+    // (cond, true_expr, false_expr)
+    Cond(Pos, Box<Expr>, Box<Expr>, Box<Expr>),
     Reference(Pos, String),
     Dereference(Pos, Box<Expr>),
 }
-
+ 
 impl GetPos for Expr {
     fn pos(&self) -> Pos {
         match self {
@@ -113,6 +115,7 @@ impl GetPos for Expr {
             Expr::BinOperator(pos, _, _, _)  => pos.clone(),
             Expr::Reference(pos, _)          => pos.clone(),
             Expr::Dereference(pos, _)        => pos.clone(),
+            Expr::Cond(pos, _, _, _)         => pos.clone(),
         }
     }
 }

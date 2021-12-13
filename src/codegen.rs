@@ -345,7 +345,7 @@ fn get_safe_registers(used_registers: RegSet) -> RegSet {
  * @return (instructions, lhs_loc, rhs_loc, used_registers)
  */
 fn gen_pre_op(
-    c: &FunContext, lhs: &Expr, rhs: &Expr
+    c: &mut FunContext, lhs: &Expr, rhs: &Expr
 ) -> Result<(LinkedList<String>, Loc, Loc, RegSet), CompErr> {
     // Generate instructions for RHS first so we know which registers are safe
     let (mut rhs_ins, rhs_loc, mut used_registers) = gen_expr(c, rhs)?;
@@ -403,7 +403,7 @@ fn gen_pre_op(
 }
 
 fn gen_unary_op_assign(
-    c: &FunContext, asm_op: &str, expr: &Expr
+    c: &mut FunContext, asm_op: &str, expr: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     let (mut instructions, expr_loc, used_registers) = gen_expr(c, expr)?;
 
@@ -419,7 +419,7 @@ fn gen_unary_op_assign(
 }
 
 fn gen_unary_op_non_assign(
-    c: &FunContext, asm_op: &str, expr: &Expr
+    c: &mut FunContext, asm_op: &str, expr: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     let (mut instructions, expr_loc, mut used_registers) = gen_expr(c, expr)?;
     let dest_reg = match expr_loc {
@@ -441,7 +441,7 @@ fn gen_unary_op_non_assign(
 }
 
 fn gen_unary_op(
-    c: &FunContext, op: &UnaryOp, expr: &Expr
+    c: &mut FunContext, op: &UnaryOp, expr: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     match op {
         UnaryOp::Increment => gen_unary_op_assign(c, "incq", expr),
@@ -452,7 +452,7 @@ fn gen_unary_op(
 }
 
 fn gen_bin_op(
-    c: &FunContext, op: &BinOp, lhs: &Expr, rhs: &Expr
+    c: &mut FunContext, op: &BinOp, lhs: &Expr, rhs: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     let (mut instructions, lhs_loc, rhs_loc, mut used_registers) =
         gen_pre_op(c, lhs, rhs)?;
@@ -468,7 +468,7 @@ fn gen_bin_op(
 }
 
 fn gen_syscall(
-    c: &FunContext, pos: &Pos, params: &Vec<Expr>
+    c: &mut FunContext, pos: &Pos, params: &Vec<Expr>
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     if params.len() == 0 || params.len() > 7 {
         return CompErr::err(pos, format!(
@@ -502,7 +502,7 @@ fn gen_syscall(
 }
 
 fn gen_call(
-    c: &FunContext, pos: &Pos, name: &String, params: &Vec<Expr>
+    c: &mut FunContext, pos: &Pos, name: &String, params: &Vec<Expr>
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     if name == "syscall" {
         return gen_syscall(c, pos, params);
@@ -589,7 +589,7 @@ fn gen_reference(
 }
 
 fn gen_dereference(
-    c: &FunContext, expr: &Expr
+    c: &mut FunContext, expr: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     let (mut instructions, target_loc, mut used_registers) = gen_expr(c, expr)?;
 
@@ -615,7 +615,7 @@ fn gen_dereference(
 
 // Generates the RHS instructions for an assignment
 fn gen_expr_ass_rhs(
-    c: &FunContext, rhs: &Expr
+    c: &mut FunContext, rhs: &Expr
 ) -> Result<(LinkedList<String>, Reg, RegSet), CompErr> {
     let (mut instructions, rhs_loc, mut used_registers) = gen_expr(c, rhs)?;
 
@@ -639,7 +639,7 @@ fn gen_expr_ass_rhs(
 }
 
 fn gen_expr_ass(
-    c: &FunContext, pos: &Pos, lhs_name: &String, rhs: &Expr
+    c: &mut FunContext, pos: &Pos, lhs_name: &String, rhs: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     let (mut instructions, rhs_reg, used_registers) =
         gen_expr_ass_rhs(c, rhs)?;
@@ -659,7 +659,7 @@ fn gen_expr_ass(
 // FIXME: This register assignment technique is super similar in other places
 // Abstract away!
 fn gen_expr_deref_ass(
-    c: &FunContext, lhs: &Expr, rhs: &Expr
+    c: &mut FunContext, lhs: &Expr, rhs: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     let (mut instructions, lhs_loc, mut used_registers) = gen_expr(c, lhs)?;
     let (mut rhs_inst, rhs_reg, rhs_used) = gen_expr_ass_rhs(c, rhs)?;
@@ -732,11 +732,46 @@ fn gen_int(signed: i64) -> (LinkedList<String>, Loc, RegSet) {
     }
 }
 
+fn gen_cond_expr(
+    c: &mut FunContext,
+    cond_expr: &Expr,
+    true_expr: &Expr,
+    false_expr: &Expr,
+) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
+    // Move the results to %rax, kinda arbitrarily
+    let dest_reg = Reg::Rax;
+    let dest_loc = Loc::Register(dest_reg);
+    let mut used_registers = RegSet::of(dest_reg);
+
+    let true_end_label = c.new_label("COND_TRUE_END");
+    let false_end_label = c.new_label("COND_FALSE_END");
+    let mut instructions = gen_cond(c, cond_expr, &true_end_label)?;
+
+    let (mut true_inst, true_loc, true_used) = gen_expr(c, true_expr)?;
+    instructions.append(&mut true_inst);
+    used_registers = used_registers.union(true_used);
+    if true_loc != dest_loc {
+        instructions.push_back(format!("movq {},{}", true_loc, dest_loc));
+    }
+    instructions.push_back(format!("jmp {}", false_end_label));
+    instructions.push_back(format!("{}:", true_end_label));
+
+    let (mut false_inst, false_loc, false_used) = gen_expr(c, false_expr)?;
+    instructions.append(&mut false_inst);
+    used_registers = used_registers.union(false_used);
+    if false_loc != dest_loc {
+        instructions.push_back(format!("movq {},{}", false_loc, dest_loc));
+    }
+    instructions.push_back(format!("{}:", false_end_label));
+
+    Ok((instructions, dest_loc, used_registers))
+}
+
 /**
  * @return (instructions, location, used_registers)
  */
 fn gen_expr(
-    c: &FunContext, expr: &Expr
+    c: &mut FunContext, expr: &Expr
 ) -> Result<(LinkedList<String>, Loc, RegSet), CompErr> {
     match expr {
         Expr::Int(_, value) => Ok(gen_int(*value)),
@@ -763,11 +798,13 @@ fn gen_expr(
         Expr::Call(pos, name, params)      => gen_call(c, pos, name, params),
         Expr::Reference(pos, name)         => gen_reference(c, pos, name),
         Expr::Dereference(_, expr)         => gen_dereference(c, expr),
+        Expr::Cond(_, cond, true_expr, false_expr) =>
+            gen_cond_expr(c, cond, true_expr, false_expr),
     }
 }
 
 fn gen_return_expr(
-    c: &FunContext, expr: &Expr
+    c: &mut FunContext, expr: &Expr
 ) -> Result<LinkedList<String>, CompErr> {
     let (mut instructions, loc, _) = gen_expr(c, &expr)?;
 

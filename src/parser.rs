@@ -72,10 +72,6 @@ impl ParseContext {
         }
     }
 
-    pub fn at_eof(&self) -> bool {
-        self.offset >= self.content.len()
-    }
-
     pub fn pos(&self) -> Pos {
         Pos::new(self.offset, self.file_id)
     }
@@ -463,16 +459,17 @@ fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
     parse_expr_prec(c, 0)
 }
 
+const COND_EXPR_PRECEDENCE: u8 = 2;
 fn get_lr_op_precedence(op: &BinOp) -> u8 {
     match op {
-        BinOp::Div       | BinOp::Mod | BinOp::Mul            => 9,
-        BinOp::Add       | BinOp::Sub                         => 8,
-        BinOp::ShiftLeft | BinOp::ShiftRight                  => 7,
-        BinOp::Gt        | BinOp::Lt  | BinOp::Ge | BinOp::Le => 6,
-        BinOp::Eq        | BinOp::Ne                          => 5,
-        BinOp::And                                            => 4,
-        BinOp::Xor                                            => 3,
-        BinOp::Or                                             => 2,
+        BinOp::Div       | BinOp::Mod | BinOp::Mul            => 10,
+        BinOp::Add       | BinOp::Sub                         => 9,
+        BinOp::ShiftLeft | BinOp::ShiftRight                  => 8,
+        BinOp::Gt        | BinOp::Lt  | BinOp::Ge | BinOp::Le => 7,
+        BinOp::Eq        | BinOp::Ne                          => 6,
+        BinOp::And                                            => 5,
+        BinOp::Xor                                            => 4,
+        BinOp::Or                                             => 3,
         BinOp::Assign(_)                                      => 1,
     }
 }
@@ -487,7 +484,7 @@ fn parse_expr_prec(
     let mut expr = parse_expr_unchained(c)?;
     loop {
         match parse_op(c)? {
-            Some((pos, tok, binop)) => {
+            (pos, tok, Some(binop)) => {
                 let next_precedence = get_lr_op_precedence(&binop);
                 if next_precedence >= precedence {
                     let rhs_expr = parse_expr_prec(c, next_precedence)?;
@@ -497,7 +494,22 @@ fn parse_expr_prec(
                     return Ok(expr);
                 }
             },
-            None => return Ok(expr),
+            (pos, Token::Question, _) if COND_EXPR_PRECEDENCE >= precedence => {
+                let true_expr = parse_expr_prec(c, COND_EXPR_PRECEDENCE)?;
+                parse_tok(c, Token::Colon)?;
+                let false_expr = parse_expr_prec(c, COND_EXPR_PRECEDENCE)?;
+
+                expr = Expr::Cond(
+                    pos,
+                    Box::new(expr),
+                    Box::new(true_expr),
+                    Box::new(false_expr)
+                )
+            },
+            (pos, tok, _) => {
+                push_tok(c, (pos, tok));
+                return Ok(expr)
+            },
         }
     }
 }
@@ -559,50 +571,50 @@ fn join_exprs(
     }
 }
 
+// Always returns the next token
+// Optionally returns a binop if appropriate
 fn parse_op(
     c: &mut ParseContext
-) -> Result<Option<(Pos, Token, BinOp)>, CompErr> {
+) -> Result<(Pos, Token, Option<BinOp>), CompErr> {
     let (pos, tok) = pop_tok(c)?;
-    Ok(match tok {
-        Token::EqEq         => Some((pos, tok, BinOp::Eq)),
-        Token::Eq           => Some((pos, tok, BinOp::Assign(None))),
-        Token::EqShiftRight => Some((pos, tok, BinOp::assign(BinOp::ShiftRight))),
-        Token::EqGe         => Some((pos, tok, BinOp::assign(BinOp::Ge))),
-        Token::EqShiftLeft  => Some((pos, tok, BinOp::assign(BinOp::ShiftLeft))),
-        Token::EqLe         => Some((pos, tok, BinOp::assign(BinOp::Le))),
-        Token::EqNe         => Some((pos, tok, BinOp::assign(BinOp::Ne))),
-        Token::EqEqEq       => Some((pos, tok, BinOp::assign(BinOp::Eq))),
-        Token::EqPlus       => Some((pos, tok, BinOp::assign(BinOp::Add))),
-        Token::EqMinus      => Some((pos, tok, BinOp::assign(BinOp::Sub))),
-        Token::EqLt         => Some((pos, tok, BinOp::assign(BinOp::Lt))),
-        Token::EqGt         => Some((pos, tok, BinOp::assign(BinOp::Gt))),
-        Token::EqAmpersand  => Some((pos, tok, BinOp::assign(BinOp::And))),
-        Token::EqPipe       => Some((pos, tok, BinOp::assign(BinOp::Or))),
-        Token::EqCaret      => Some((pos, tok, BinOp::assign(BinOp::Xor))),
-        Token::EqPercent    => Some((pos, tok, BinOp::assign(BinOp::Mod))),
-        Token::EqSlash      => Some((pos, tok, BinOp::assign(BinOp::Div))),
-        Token::EqAsterisk   => Some((pos, tok, BinOp::assign(BinOp::Mul))),
-        Token::Plus         => Some((pos, tok, BinOp::Add)),
-        Token::Minus        => Some((pos, tok, BinOp::Sub)),
-        Token::Le           => Some((pos, tok, BinOp::Le)),
-        Token::Lt           => Some((pos, tok, BinOp::Lt)),
-        Token::Ge           => Some((pos, tok, BinOp::Ge)),
-        Token::Gt           => Some((pos, tok, BinOp::Gt)),
-        Token::Ne           => Some((pos, tok, BinOp::Ne)),
-        Token::ShiftLeft    => Some((pos, tok, BinOp::ShiftLeft)),
-        Token::ShiftRight   => Some((pos, tok, BinOp::ShiftRight)),
-        Token::Ampersand    => Some((pos, tok, BinOp::And)),
-        Token::Pipe         => Some((pos, tok, BinOp::Or)),
-        Token::Caret        => Some((pos, tok, BinOp::Xor)),
-        Token::Percent      => Some((pos, tok, BinOp::Mod)),
-        Token::Slash        => Some((pos, tok, BinOp::Div)),
-        Token::Asterisk     => Some((pos, tok, BinOp::Mul)),
-        tok => {
-            // The next token isn't a chaining token... Rewind!
-            push_tok(c, (pos, tok));
-            None
-        },
-    })
+
+    let binop = match tok {
+        Token::EqEq         => Some(BinOp::Eq),
+        Token::Eq           => Some(BinOp::Assign(None)),
+        Token::EqShiftRight => Some(BinOp::assign(BinOp::ShiftRight)),
+        Token::EqGe         => Some(BinOp::assign(BinOp::Ge)),
+        Token::EqShiftLeft  => Some(BinOp::assign(BinOp::ShiftLeft)),
+        Token::EqLe         => Some(BinOp::assign(BinOp::Le)),
+        Token::EqNe         => Some(BinOp::assign(BinOp::Ne)),
+        Token::EqEqEq       => Some(BinOp::assign(BinOp::Eq)),
+        Token::EqPlus       => Some(BinOp::assign(BinOp::Add)),
+        Token::EqMinus      => Some(BinOp::assign(BinOp::Sub)),
+        Token::EqLt         => Some(BinOp::assign(BinOp::Lt)),
+        Token::EqGt         => Some(BinOp::assign(BinOp::Gt)),
+        Token::EqAmpersand  => Some(BinOp::assign(BinOp::And)),
+        Token::EqPipe       => Some(BinOp::assign(BinOp::Or)),
+        Token::EqCaret      => Some(BinOp::assign(BinOp::Xor)),
+        Token::EqPercent    => Some(BinOp::assign(BinOp::Mod)),
+        Token::EqSlash      => Some(BinOp::assign(BinOp::Div)),
+        Token::EqAsterisk   => Some(BinOp::assign(BinOp::Mul)),
+        Token::Plus         => Some(BinOp::Add),
+        Token::Minus        => Some(BinOp::Sub),
+        Token::Le           => Some(BinOp::Le),
+        Token::Lt           => Some(BinOp::Lt),
+        Token::Ge           => Some(BinOp::Ge),
+        Token::Gt           => Some(BinOp::Gt),
+        Token::Ne           => Some(BinOp::Ne),
+        Token::ShiftLeft    => Some(BinOp::ShiftLeft),
+        Token::ShiftRight   => Some(BinOp::ShiftRight),
+        Token::Ampersand    => Some(BinOp::And),
+        Token::Pipe         => Some(BinOp::Or),
+        Token::Caret        => Some(BinOp::Xor),
+        Token::Percent      => Some(BinOp::Mod),
+        Token::Slash        => Some(BinOp::Div),
+        Token::Asterisk     => Some(BinOp::Mul),
+        _                   => None,
+    };
+    Ok((pos, tok, binop))
 }
 
 fn parse_expr_id_unchained(
