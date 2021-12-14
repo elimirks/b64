@@ -14,7 +14,8 @@ pub struct ParseResult {
     pub file_contents: Vec<(String, String)>,
     // Stores (file_id, strings_vec)
     pub strings: Vec<(usize, Vec<Vec<char>>)>,
-    pub root_statements: Vec<RootStatement>,
+    pub functions: Vec<RSFunction>,
+    pub variables: Vec<RSVariable>,
     pub errors: Vec<CompErr>,
 }
 
@@ -23,7 +24,8 @@ impl ParseResult {
         ParseResult {
             file_contents: vec!(),
             strings: vec!(),
-            root_statements: vec!(),
+            functions: vec!(),
+            variables: vec!(),
             errors: vec!(),
         }
     }
@@ -77,13 +79,16 @@ impl ParseContext {
     }
 }
 
-fn parse_global_var(
+fn parse_root_var(
     c: &mut ParseContext, name: String
-) -> Result<RootStatement, CompErr> {
+) -> Result<RSVariable, CompErr> {
     let pos = c.pos();
     let var = parse_var_entry(c, name)?;
     parse_tok(c, Token::Semicolon)?;
-    Ok(RootStatement::Variable(pos, var))
+    Ok(RSVariable{
+        pos: pos,
+        var: var,
+    })
 }
 
 // Packs the given chars into 64 bit wide chars.
@@ -191,47 +196,25 @@ fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
 // Expects the @import token to have been parsed
 fn parse_import(
     c: &mut ParseContext
-) -> Result<RootStatement, CompErr> {
+) -> Result<RSImport, CompErr> {
     match pop_tok(c)? {
         (pos, Token::Str(chars)) => {
             let path: String = chars.into_iter().collect();
             parse_tok(c, Token::Semicolon)?;
-            Ok(RootStatement::Import(pos, path))
+            Ok(RSImport {
+                pos: pos,
+                path: path,
+            })
         },
         (pos, tok) => CompErr::err(&pos, format!(
             "String expected. {:?} given", tok)),
     }
 }
 
-fn parse_root_statement(
-    c: &mut ParseContext
-) -> Result<Option<RootStatement>, CompErr> {
-    match pop_tok(c)? {
-        (_, Token::Id(id)) => {
-            let (pos, tok) = pop_tok(c)?;
-
-            match tok {
-                Token::LParen => {
-                    push_tok(c, (pos.clone(), Token::LParen));
-                    Ok(Some(parse_fun(c, pos, id)?))
-                },
-                tok => {
-                    push_tok(c, (pos, tok));
-                    Ok(Some(parse_global_var(c, id)?))
-                },
-            }
-        },
-        (_, Token::Import) => Ok(Some(parse_import(c)?)),
-        (_, Token::Eof) => Ok(None),
-        (pos, tok) => CompErr::err(&pos, format!(
-            "Expected id. {:?} found", tok)),
-    }
-}
-
 // Parses everything after the name of a function
 fn parse_fun(
     c: &mut ParseContext, pos: Pos, name: String
-) -> Result<RootStatement, CompErr> {
+) -> Result<RSFunction, CompErr> {
     parse_tok(c, Token::LParen)?;
 
     let mut args = Vec::<String>::new();
@@ -263,9 +246,12 @@ fn parse_fun(
                     &pos, format!("Unexpected token: {:?}", other)),
         }
     }
-
-    let body = parse_statement(c)?;
-    Ok(RootStatement::Function(pos, name, args, body))
+    Ok(RSFunction {
+        pos: pos,
+        name: name,
+        args: args,
+        body: parse_statement(c)?,
+    })
 }
 
 fn parse_statement(c: &mut ParseContext) -> Result<Statement, CompErr> {
@@ -781,7 +767,7 @@ pub fn print_comp_error(parse_result: &ParseResult, err: &CompErr) {
 
 fn parse_content(
     file_id: usize, content: &String
-) -> Result<(Vec<RootStatement>, Vec<Vec<char>>), CompErr> {
+) -> Result<(RootStatements, Vec<Vec<char>>), CompErr> {
     let mut c = ParseContext {
         content: content.chars().collect(),
         offset: 0,
@@ -790,14 +776,33 @@ fn parse_content(
         tok_stack: vec!(),
     };
 
-    let mut roots = vec!();
+    let mut root_statements = RootStatements::new();
     loop {
-        match parse_root_statement(&mut c)? {
-            Some(statement) => roots.push(statement),
-            None            => break,
+        match pop_tok(&mut c)? {
+            (_, Token::Id(id)) => {
+                let (pos, tok) = pop_tok(&mut c)?;
+
+                match tok {
+                    Token::LParen => {
+                        push_tok(&mut c, (pos.clone(), Token::LParen));
+                        root_statements.functions.push(
+                            parse_fun(&mut c, pos, id)?);
+                    },
+                    tok => {
+                        push_tok(&mut c, (pos, tok));
+                        root_statements.variables.push(
+                            parse_root_var(&mut c, id)?);
+                    },
+                }
+            },
+            (_, Token::Import) =>
+                root_statements.imports.push(parse_import(&mut c)?),
+            (_, Token::Eof) => break,
+            (pos, tok) => return CompErr::err(&pos, format!(
+                "Expected id. {:?} found", tok)),
         }
     }
-    Ok((roots, c.strings))
+    Ok((root_statements, c.strings))
 }
 
 fn relative_to_canonical_path(base: &PathBuf, imp: &PathBuf) -> PathBuf {
@@ -886,19 +891,16 @@ fn parse_file(
         .expect(format!("Failed reading {}", path_str).as_str());
 
     match parse_content(file_id, &content) {
-        Ok((statements, strings)) => {
+        Ok((mut statements, strings)) => {
             let mut guard = parse_state_mutex.lock().unwrap();
 
-            for s in statements {
-                match s {
-                    RootStatement::Import(_, imp) => {
-                        let imp_path = Path::new(&imp).to_path_buf();
-                        guard.push_path_to_parse(relative_to_canonical_path(&path, &imp_path));
-                    },
-                    s => guard.result.root_statements.push(s)
-                };
+            for import in statements.imports {
+                let imp = import.path;
+                let imp_path = Path::new(&imp).to_path_buf();
+                guard.push_path_to_parse(relative_to_canonical_path(&path, &imp_path));
             }
-
+            guard.result.functions.append(&mut statements.functions);
+            guard.result.variables.append(&mut statements.variables);
             guard.result.file_contents.push((path_str, content));
             guard.result.strings.push((file_id, strings));
         },

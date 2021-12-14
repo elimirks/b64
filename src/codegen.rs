@@ -1031,15 +1031,19 @@ fn gen_statement(
 }
 
 fn gen_fun(
-    c: &mut FunContext, pos: &Pos, args: &Vec<String>, body: &Statement
+    c: &mut FunContext, function: &RSFunction
 ) -> Result<LinkedList<String>, CompErr> {
+    let pos = &function.pos;
+    let args = &function.args;
+    let body = &function.body;
+
     c.new_scope();
     // Save base pointer, since it's callee-saved
     let mut instructions = ll!(format!("pushq %rbp"),
                                format!("movq %rsp,%rbp"));
 
     // Prepare initial stack memory
-    instructions.append(&mut alloc_args(c, pos, &args)?);
+    instructions.append(&mut alloc_args(c, &pos, &args)?);
     instructions.append(
         &mut prepass_gen(c, &body, 1 + std::cmp::min(6, args.len() as i64))?
     );
@@ -1060,36 +1064,36 @@ fn gen_fun(
 }
 
 // Prepass to find the global scope, before we start evaluating things
-fn root_prepass(
-    statements: &Vec<RootStatement>
-) -> Result<(HashMap<String, ScopeEntry>, Vec<&Var>), CompErr> {
+fn root_prepass<'a>(
+    functions: &Vec<RSFunction>,
+    variables: &'a Vec<RSVariable>,
+) -> Result<(HashMap<String, ScopeEntry>, Vec<&'a Var>), CompErr> {
     let mut scope = HashMap::new();
     let mut root_vars = Vec::<&Var>::new();
 
-    for statement in statements {
-        match statement {
-            RootStatement::Function(pos, name, args, _) => {
-                if scope.contains_key(name) {
-                    return CompErr::err(
-                        pos, format!("{} already in root scope", name));
-                }
+    for variable in variables {
+        let var = &variable.var;
 
-                scope.insert(name.clone(), ScopeEntry::Fun(args.len()));
-            },
-            RootStatement::Variable(pos, var) => {
-                let name = var.name();
-                if scope.contains_key(name) {
-                    return CompErr::err(
-                        pos, format!("{} already in root scope", name));
-                }
-                root_vars.push(var);
-
-                scope.insert(name.clone(),
-                             ScopeEntry::Var(Loc::Data(name.clone())));
-            },
-            RootStatement::Import(_, _) => {},
+        let name = var.name();
+        if scope.contains_key(name) {
+            return CompErr::err(
+                &variable.pos, format!("{} already in root scope", name));
         }
+        root_vars.push(&var);
+
+        scope.insert(name.clone(),
+                     ScopeEntry::Var(Loc::Data(name.clone())));
     }
+
+    for function in functions {
+        let name = &function.name;
+        if scope.contains_key(name) {
+            return CompErr::err(&function.pos, format!(
+                "{} already in root scope", name));
+        }
+        scope.insert(name.clone(), ScopeEntry::Fun(function.args.len()));
+    }
+
     Ok((scope, root_vars))
 }
 
@@ -1187,7 +1191,9 @@ fn gen(
 ) -> Result<(), CompErr> {
     let mut w = BufWriter::new(writer);
 
-    let (global_scope, root_vars) = root_prepass(&parse_result.root_statements)?;
+    let (global_scope, root_vars) = root_prepass(
+        &parse_result.functions,
+        &parse_result.variables)?;
 
     CompErr::from_io_res(generate_data_segment(&root_vars, &mut w))?;
     CompErr::from_io_res(generate_strings(&parse_result.strings, &mut w))?;
@@ -1195,33 +1201,25 @@ fn gen(
 
     let mut label_counter = 0;
 
-    for statement in &parse_result.root_statements {
-        match statement {
-            RootStatement::Function(pos, name, args, body) => {
-                let mut c = FunContext {
-                    global_scope: &global_scope,
-                    fun_scope: HashMap::new(),
-                    block_vars: vec!(),
-                    local_var_locs: HashMap::new(),
-                    labels: HashMap::new(),
-                    label_counter: label_counter,
-                    break_dest_stack: vec!(),
-                };
+    for function in &parse_result.functions {
+        let mut c = FunContext {
+            global_scope: &global_scope,
+            fun_scope: HashMap::new(),
+            block_vars: vec!(),
+            local_var_locs: HashMap::new(),
+            labels: HashMap::new(),
+            label_counter: label_counter,
+            break_dest_stack: vec!(),
+        };
 
-                let instructions = gen_fun(&mut c, &pos, args, body)?;
+        let instructions = gen_fun(&mut c, function)?;
 
-                CompErr::from_io_res(writeln!(w, "{}:", name))?;
-                for instruction in instructions {
-                    CompErr::from_io_res(writeln!(w, "    {}", instruction))?;
-                }
-
-                label_counter = c.label_counter;
-            },
-            // Vars are generated in the prepass
-            RootStatement::Variable(_, _) => {},
-            RootStatement::Import(_, _) =>
-                panic!("Imports should be handled during parsing"),
+        CompErr::from_io_res(writeln!(w, "{}:", function.name))?;
+        for instruction in instructions {
+            CompErr::from_io_res(writeln!(w, "    {}", instruction))?;
         }
+
+        label_counter = c.label_counter;
     }
 
     Ok(())

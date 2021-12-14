@@ -43,11 +43,37 @@ pub trait GetPos {
     fn pos(&self) -> Pos;
 }
 
-#[derive(Debug)]
-pub enum RootStatement {
-    Function(Pos, String, Vec<String>, Statement),
-    Variable(Pos, Var),
-    Import(Pos, String),
+pub struct RootStatements {
+    pub functions: Vec<RSFunction>,
+    pub variables: Vec<RSVariable>,
+    pub imports: Vec<RSImport>,
+}
+
+impl RootStatements {
+    pub fn new() -> RootStatements {
+        RootStatements {
+            functions: vec!(),
+            variables: vec!(),
+            imports: vec!(),
+        }
+    }
+}
+
+pub struct RSFunction {
+    pub pos: Pos,
+    pub name: String,
+    pub args: Vec<String>,
+    pub body: Statement,
+}
+
+pub struct RSVariable {
+    pub pos: Pos,
+    pub var: Var,
+}
+
+pub struct RSImport {
+    pub pos: Pos,
+    pub path: String,
 }
 
 #[derive(Debug)]
