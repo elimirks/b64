@@ -29,7 +29,7 @@ fn main() {
     if opts.asm {
         let parse_result = parse_or_die(&opts.inputs);
         let mut stdout = io::stdout();
-        generate(&parse_result, &mut stdout);
+        generate(parse_result, &mut stdout);
     } else {
         let output_path = if opts.run {
             "/tmp/b64.bin".to_string()
@@ -73,7 +73,7 @@ fn compile(input_paths: &Vec<String>, output_path: &String) {
 
     let parse_result = parse_or_die(&input_paths);
     // Stream the assembly code straight into GNU assembler
-    generate(&parse_result, &mut as_process.stdin.as_ref().unwrap());
+    generate(parse_result, &mut as_process.stdin.as_ref().unwrap());
 
     match as_process.wait() {
         Ok(status) => if !status.success() {
@@ -166,7 +166,7 @@ fn parse_or_die(inputs: &Vec<String>) -> ParseResult {
     let parse_result = parse_files(inputs);
 
     for err in &parse_result.errors {
-        print_comp_error(&parse_result, &err);
+        print_comp_error(&parse_result.file_contents, &err);
     }
     if !parse_result.errors.is_empty() {
         std::process::exit(1);

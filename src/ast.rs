@@ -13,6 +13,7 @@ impl Pos {
     }
 }
 
+#[derive(Clone)]
 pub struct CompErr {
     pub pos: Option<Pos>,
     pub message: String,

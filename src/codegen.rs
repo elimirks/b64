@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::collections::LinkedList;
 use std::io::BufWriter;
 use std::io::Write;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
-use crate::parser::*;
 use crate::ast::*;
 use crate::memory::*;
+use crate::parser::*;
+use crate::util::logical_cpu_count;
 
 #[derive(Debug)]
 enum ScopeEntry {
@@ -29,6 +32,7 @@ struct FunContext<'a> {
     // Maps from visible label name to compiled label name
     labels: HashMap<String, String>,
     // So we never run out of unique labels
+    func_id: usize,
     label_counter: usize,
     // Stack of end labels where to tell break where to jump to
     break_dest_stack: Vec<String>,
@@ -38,7 +42,7 @@ impl FunContext<'_> {
     fn new_label(&mut self, prefix: &str) -> String {
         self.label_counter += 1;
         // By prefixing with '.', it guarantees no collisions with user labels
-        format!(".{}_{}", prefix, self.label_counter)
+        format!(".{}_{}_{}", prefix, self.func_id, self.label_counter)
     }
 
     fn new_scope(&mut self) {
@@ -1187,49 +1191,125 @@ fn generate_strings(
 }
 
 fn gen(
-    parse_result: &ParseResult, writer: &mut dyn Write
+    strings: Vec<(usize, Vec<Vec<char>>)>,
+    functions: Vec<RSFunction>,
+    variables: Vec<RSVariable>,
+    writer: &mut dyn Write
 ) -> Result<(), CompErr> {
     let mut w = BufWriter::new(writer);
 
     let (global_scope, root_vars) = root_prepass(
-        &parse_result.functions,
-        &parse_result.variables)?;
+        &functions,
+        &variables)?;
 
     CompErr::from_io_res(generate_data_segment(&root_vars, &mut w))?;
-    CompErr::from_io_res(generate_strings(&parse_result.strings, &mut w))?;
+    CompErr::from_io_res(generate_strings(&strings, &mut w))?;
     CompErr::from_io_res(generate_start(&root_vars, &mut w))?;
 
-    let mut label_counter = 0;
+    let pool_mutex = Arc::new(Mutex::new(CodeGenPool {
+        functions: functions,
+        results: vec!(),
+        errors: vec!(),
+    }));
 
-    for function in &parse_result.functions {
-        let mut c = FunContext {
-            global_scope: &global_scope,
-            fun_scope: HashMap::new(),
-            block_vars: vec!(),
-            local_var_locs: HashMap::new(),
-            labels: HashMap::new(),
-            label_counter: label_counter,
-            break_dest_stack: vec!(),
-        };
+    let thread_count = logical_cpu_count();
+    let arc_global_scope = Arc::new(global_scope);
 
-        let instructions = gen_fun(&mut c, function)?;
+    let mut handles = Vec::with_capacity(thread_count);
+    for _ in 0..thread_count {
+        let th_pool_mutex = pool_mutex.clone();
+        let th_global_scope = arc_global_scope.clone();
 
-        CompErr::from_io_res(writeln!(w, "{}:", function.name))?;
+        handles.push(thread::spawn(move || {
+            codegen_fiber(th_global_scope, th_pool_mutex);
+        }))
+    }
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let guard = pool_mutex.lock().unwrap();
+
+    if !guard.errors.is_empty() {
+        return Err(guard.errors[0].clone());
+    }
+
+    // TODO: Do this while we wait for the threads!?
+    // Use a Condvar to spinlock until a new "batch" is ready to write
+    for (func_name, instructions) in guard.results.iter() {
+        CompErr::from_io_res(writeln!(w, "{}:", func_name))?;
         for instruction in instructions {
             CompErr::from_io_res(writeln!(w, "    {}", instruction))?;
         }
-
-        label_counter = c.label_counter;
     }
-
     Ok(())
 }
 
-pub fn generate(parse_result: &ParseResult, writer: &mut dyn Write) {
-    match gen(&parse_result, writer) {
+struct CodeGenPool {
+    functions: Vec<RSFunction>,
+    // Function name -> instructions
+    results: Vec<(String, LinkedList<String>)>,
+    errors: Vec<CompErr>,
+}
+
+fn unpool_function(
+    pool: &Arc<Mutex<CodeGenPool>>
+) -> Option<(usize, RSFunction)> {
+    let mut guard = pool.lock().unwrap();
+    let func_id = guard.functions.len();
+
+    match guard.functions.pop() {
+        Some(fun) => {
+            Some((func_id, fun))
+        },
+        None      => None,
+    }
+}
+
+fn codegen_fiber(
+    global_scope: Arc<HashMap<String, ScopeEntry>>,
+    pool: Arc<Mutex<CodeGenPool>>
+) {
+    loop {
+        match unpool_function(&pool) {
+            Some((func_id, fun)) => {
+                let mut c = FunContext {
+                    global_scope: &global_scope,
+                    fun_scope: HashMap::new(),
+                    block_vars: vec!(),
+                    local_var_locs: HashMap::new(),
+                    labels: HashMap::new(),
+                    func_id: func_id,
+                    label_counter: 0,
+                    break_dest_stack: vec!(),
+                };
+
+                match gen_fun(&mut c, &fun) {
+                    Ok(instructions) => {
+                        let mut guard = pool.lock().unwrap();
+                        guard.results.push((fun.name, instructions));
+                    },
+                    Err(err) => {
+                        let mut guard = pool.lock().unwrap();
+                        guard.errors.push(err);
+                    },
+                }
+            },
+            None => return,
+        }
+    }
+}
+
+pub fn generate(parse_result: ParseResult, writer: &mut dyn Write) {
+    match gen(
+        parse_result.strings,
+        parse_result.functions,
+        parse_result.variables,
+        writer
+    ) {
         Ok(_) => {},
         Err(err) => {
-            print_comp_error(parse_result, &err);
+            print_comp_error(&parse_result.file_contents, &err);
             std::process::exit(1);
         },
     }

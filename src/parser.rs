@@ -742,11 +742,11 @@ fn get_parse_position(content: &Vec<char>, offset: usize) -> (String, usize, usi
     (line.to_string(), row, col)
 }
 
-pub fn print_comp_error(parse_result: &ParseResult, err: &CompErr) {
+pub fn print_comp_error(file_contents: &Vec<(String, String)>, err: &CompErr) {
     println!("Compile error: {}", err.message);
     match &err.pos {
         Some(pos) => {
-            let (file_name, content) = &parse_result.file_contents[pos.file_id];
+            let (file_name, content) = &file_contents[pos.file_id];
             println!("In file: {}", file_name);
 
             let (line, row, col) = get_parse_position(
@@ -846,13 +846,11 @@ pub fn parse_files(paths: &Vec<String>) -> ParseResult {
             });
             handles.push(th);
         }
-
-        // TODO: It would be better to wait until _any_ are done
-        // ... but this is fine for now
+        // TODO: Do something like the fiber technique in codegen, instead of
+        // spawning so many new threads
         for th in handles {
             th.join().unwrap();
         }
-
         file_id += 1;
     }
 
