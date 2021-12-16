@@ -10,6 +10,13 @@ use crate::memory::*;
 use crate::parser::*;
 use crate::util::logical_cpu_count;
 
+struct CodeGenPool {
+    functions: Vec<RSFunction>,
+    // Function name -> instructions
+    results: Vec<(String, LinkedList<String>)>,
+    errors: Vec<CompErr>,
+}
+
 #[derive(Debug)]
 enum ScopeEntry {
     // Contains the number of args
@@ -1243,13 +1250,6 @@ fn gen(
         }
     }
     Ok(())
-}
-
-struct CodeGenPool {
-    functions: Vec<RSFunction>,
-    // Function name -> instructions
-    results: Vec<(String, LinkedList<String>)>,
-    errors: Vec<CompErr>,
 }
 
 fn unpool_function(
