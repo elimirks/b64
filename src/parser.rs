@@ -71,10 +71,8 @@ impl ParseState {
     }
 }
 
-pub struct ParseContext {
-    // TODO: Use u8 instead. So only support ASCII
-    // `char` are 32 bits wide!!!!
-    pub content: Vec<char>,
+pub struct ParseContext<'a> {
+    pub content: &'a [u8],
     // Offset for use by the tokenizer
     pub offset: usize,
     pub file_id: usize,
@@ -84,7 +82,7 @@ pub struct ParseContext {
     pub tok_stack: Vec<(Pos, Token)>,
 }
 
-impl ParseContext {
+impl ParseContext<'_> {
     pub fn peek_char(&self) -> Option<char> {
         if self.offset < self.content.len() {
             Some(self.content[self.offset] as char)
@@ -785,8 +783,9 @@ pub fn print_comp_error(file_contents: &Vec<(String, String)>, err: &CompErr) {
 fn parse_content(
     file_id: usize, content: &String
 ) -> Result<(RootStatements, Vec<Vec<char>>), CompErr> {
+    // TODO: Validate `content` is valid ASCII first
     let mut c = ParseContext {
-        content: content.chars().collect(),
+        content: content.as_bytes(),
         offset: 0,
         file_id: file_id,
         strings: vec!(),

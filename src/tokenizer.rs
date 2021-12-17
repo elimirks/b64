@@ -128,7 +128,7 @@ macro_rules! multi_tok {
 fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
     c.offset += 1;
-    match c.content[c.offset - 1] {
+    match c.content[c.offset - 1] as char {
         '+' => multi_tok!(c, pos, Token::Plus,
                           '+', Token::PlusPlus),
         '-' => multi_tok!(c, pos, Token::Minus,
@@ -169,10 +169,10 @@ fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 // Returns a metaprogramming token
 fn get_tok_meta(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let next_chars = alphanumeric_slice(&c.content, c.offset + 1);
-    let next_word: String = next_chars.into_iter().collect();
+    let next_word = std::str::from_utf8(next_chars).unwrap();
     let pos = c.pos();
 
-    match next_word.as_str() {
+    match next_word {
         "import" => {
             c.offset += 1 + next_chars.len();
             Ok((c.pos(), Token::Import))
@@ -186,8 +186,14 @@ fn get_tok_meta(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 // Assumes the character at the current point is =
 fn get_tok_equals(c: &mut ParseContext) -> (Pos, Token) {
     // Peek at the next 2 chars
-    let c1 = c.content.get(c.offset + 1).unwrap_or(&' ');
-    let c2 = c.content.get(c.offset + 2).unwrap_or(&' ');
+    let c1 = match c.content.get(c.offset + 1) {
+        Some(value) => *value as char,
+        None        => ' ',
+    };
+    let c2 = match c.content.get(c.offset + 2) {
+        Some(value) => *value as char,
+        None        => ' ',
+    };
 
     let (len, tok) = match (c1, c2) {
         ('>', '>') => (3, Token::EqShiftRight),
@@ -220,7 +226,8 @@ fn get_tok_int(
 ) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
     let current_word = alphanumeric_slice(&c.content, c.offset);
-    let str_word: String = current_word.into_iter().collect();
+    // TODO: No need to allocate a new string here. Reimplement from radix!
+    let str_word: String = std::str::from_utf8(current_word).unwrap().to_string();
 
     match i64::from_str_radix(&str_word, radix) {
         Ok(num) => {
@@ -264,8 +271,8 @@ fn get_inside_quotes(
     let mut i = c.offset;
     let mut chars = vec!();
 
-    while i < c.content.len() && c.content[i] != terminal {
-        let chr = match c.content[i] {
+    while i < c.content.len() && c.content[i] as char != terminal {
+        let chr = match c.content[i] as char {
             '*' => {
                 i += 1;
                 // Hit EOF while parsing char
@@ -273,8 +280,7 @@ fn get_inside_quotes(
                     return CompErr::err(
                         &c.pos(), "Hit EOF while parsing char".to_string());
                 }
-
-                match c.content[i] {
+                match c.content[i] as char {
                     '*'  => '*',
                     'n'  => '\n',
                     '0'  => '\0',
@@ -291,13 +297,11 @@ fn get_inside_quotes(
             },
             chr => {
                 let ichar = chr as i64;
-
                 if ichar >= 256 || ichar < 0 {
                     return CompErr::err(
                         &c.pos(),
                         "b64 only supports ASCII chars".to_string());
                 }
-
                 chr
             },
         };
@@ -315,19 +319,19 @@ fn get_tok_word(c: &mut ParseContext) -> (Pos, Token) {
     let slice = alphanumeric_slice(&c.content, c.offset);
     c.offset += slice.len();
 
-    let tok = match slice {
-        ['a', 'u', 't', 'o']           => Token::Auto,
-        ['b', 'r', 'e', 'a', 'k']      => Token::Break,
-        ['e', 'l', 's', 'e']           => Token::Else,
-        ['e', 'o', 'f']                => Token::Eof,
-        ['e', 'x', 't', 'r', 'n']      => Token::Extern,
-        ['g', 'o', 't', 'o']           => Token::Goto,
-        ['i', 'f']                     => Token::If,
-        ['r', 'e', 't', 'u', 'r', 'n'] => Token::Return,
-        ['s', 'w', 'i', 't', 'c', 'h'] => Token::Switch,
-        ['w', 'h', 'i', 'l', 'e']      => Token::While,
-        _ => {
-            let name: String = slice.into_iter().collect();
+    // Safe to assume it's valid utf8 since we enforce ASCII
+    let tok = match std::str::from_utf8(slice).unwrap() {
+        "auto"   => Token::Auto,
+        "break"  => Token::Break,
+        "else"   => Token::Else,
+        "extrn"  => Token::Extern,
+        "goto"   => Token::Goto,
+        "if"     => Token::If,
+        "return" => Token::Return,
+        "switch" => Token::Switch,
+        "while"  => Token::While,
+        word => {
+            let name: String = word.to_string();
 
             match c.peek_char() {
                 Some(':') => {
@@ -347,10 +351,10 @@ fn get_tok_word(c: &mut ParseContext) -> (Pos, Token) {
  * @return An empty slice if the offset is out of bounds,
  *         or if there are no alphanumeric characters at that position
  */
-fn alphanumeric_slice(slice: &[char], offset: usize) -> &[char] {
+fn alphanumeric_slice(slice: &[u8], offset: usize) -> &[u8] {
     let mut len = 0;
     while offset + len < slice.len() {
-        let c = slice[offset + len];
+        let c = slice[offset + len] as char;
         if c.is_alphanumeric() || c == '_' {
             len += 1;
         } else {
@@ -363,7 +367,7 @@ fn alphanumeric_slice(slice: &[char], offset: usize) -> &[char] {
 // Parse any amount of whitespace, including comments
 fn consume_ws(c: &mut ParseContext) {
     while c.offset < c.content.len() {
-        match c.content[c.offset] {
+        match c.content[c.offset] as char {
             ' '  => c.offset += 1,
             '\n' => c.offset += 1,
             '/' => if !consume_comment(c) {
@@ -387,14 +391,14 @@ fn consume_comment(c: &mut ParseContext) -> bool {
     c.offset += 2;
 
     let mut one;
-    let mut two = '\0';
+    let mut two = 0;
 
     while c.offset < c.content.len() {
         one = two;
         two = c.content[c.offset];
         c.offset += 1;
 
-        if one == '*' && two == '/' {
+        if one == '*' as u8 && two == '/' as u8 {
             break;
         }
     }
