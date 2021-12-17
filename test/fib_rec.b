@@ -1,3 +1,6 @@
+  
+
+
 /* Returns nonsense for n < 0 */
 fib(n) {
   return(
@@ -10,3 +13,5 @@ fib(n) {
 main() {
     return(fib(10));
 }
+
+/* Some utf-8 Ω */

@@ -1,6 +1,9 @@
 use crate::parser::ParseContext;
 use crate::ast::{Pos, CompErr};
 
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+use std::arch::x86_64::*;
+
 #[derive(Debug, PartialEq)]
 pub enum Token {
     Id(String),
@@ -85,7 +88,7 @@ pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
         },
         Some(ch) => {
             if ch == '_' || ch.is_alphabetic() {
-                Ok(get_tok_word(c))
+                get_tok_word(c)
             } else if ch.is_numeric() {
                 get_tok_int(c, 10)
             } else if ch == '\'' {
@@ -168,13 +171,12 @@ fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 // Assumes the @ token has been parsed
 // Returns a metaprogramming token
 fn get_tok_meta(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
-    let next_chars = alphanumeric_slice(&c.content, c.offset + 1);
-    let next_word = std::str::from_utf8(next_chars).unwrap();
     let pos = c.pos();
+    let next_word = alphanumeric_slice(&pos, &c.content, c.offset + 1)?;
 
     match next_word {
         "import" => {
-            c.offset += 1 + next_chars.len();
+            c.offset += 1 + next_word.len();
             Ok((c.pos(), Token::Import))
         },
         other => {
@@ -225,9 +227,9 @@ fn get_tok_int(
     c: &mut ParseContext, radix: u32
 ) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
-    let current_word = alphanumeric_slice(&c.content, c.offset);
+    let current_word = alphanumeric_slice(&pos, &c.content, c.offset)?;
     // TODO: No need to allocate a new string here. Reimplement from radix!
-    let str_word: String = std::str::from_utf8(current_word).unwrap().to_string();
+    let str_word: String = current_word.to_string();
 
     match i64::from_str_radix(&str_word, radix) {
         Ok(num) => {
@@ -314,13 +316,13 @@ fn get_inside_quotes(
 }
 
 // Parsed word-like tokens. Includes keywords and IDs
-fn get_tok_word(c: &mut ParseContext) -> (Pos, Token) {
+fn get_tok_word(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
-    let slice = alphanumeric_slice(&c.content, c.offset);
+    let slice = alphanumeric_slice(&pos, &c.content, c.offset)?;
     c.offset += slice.len();
 
     // Safe to assume it's valid utf8 since we enforce ASCII
-    let tok = match std::str::from_utf8(slice).unwrap() {
+    let tok = match slice {
         "auto"   => Token::Auto,
         "break"  => Token::Break,
         "else"   => Token::Else,
@@ -343,7 +345,7 @@ fn get_tok_word(c: &mut ParseContext) -> (Pos, Token) {
         },
     };
 
-    (pos, tok)
+    Ok((pos, tok))
 }
 
 /**
@@ -351,8 +353,11 @@ fn get_tok_word(c: &mut ParseContext) -> (Pos, Token) {
  * @return An empty slice if the offset is out of bounds,
  *         or if there are no alphanumeric characters at that position
  */
-fn alphanumeric_slice(slice: &[u8], offset: usize) -> &[u8] {
+fn alphanumeric_slice<'a>(
+    pos: &Pos, slice: &'a [u8], offset: usize
+) -> Result<&'a str, CompErr> {
     let mut len = 0;
+    // TODO: SIMD
     while offset + len < slice.len() {
         let c = slice[offset + len] as char;
         if c.is_alphanumeric() || c == '_' {
@@ -361,15 +366,63 @@ fn alphanumeric_slice(slice: &[u8], offset: usize) -> &[u8] {
             break;
         }
     }
-    &slice[offset..offset + len]
+    match std::str::from_utf8(&slice[offset..offset + len]) {
+        Ok(s) => Ok(s),
+        _     => CompErr::err(pos, "Only ASCII is supported".to_string()),
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+unsafe fn simd_consume_ws(c: &mut ParseContext) {
+    let space = ' ' as i8;
+    let space_vec = _mm_set_epi8(
+        space, space, space, space,
+        space, space, space, space,
+        space, space, space, space,
+        space, space, space, space
+    );
+    // Bitmask that covers both newlines & tabs.
+    // It also covers a bunch of other chars that we don't care about
+    let nl_tab = 0b00001000i8;
+    let nl_tab_vec = _mm_set_epi8(
+        nl_tab, nl_tab, nl_tab, nl_tab,
+        nl_tab, nl_tab, nl_tab, nl_tab,
+        nl_tab, nl_tab, nl_tab, nl_tab,
+        nl_tab, nl_tab, nl_tab, nl_tab
+    );
+    while c.offset + 16 < c.content.len() {
+        let values = _mm_loadu_si128(&c.content[c.offset] as *const u8 as *const _);
+        let result = _mm_or_si128(
+            _mm_cmpeq_epi8(values, space_vec),
+            _mm_cmpeq_epi8(values, nl_tab_vec)
+        );
+
+        let p = &result as *const _ as *const u8;
+
+        // TODO: Is there a better way than a filthy for loop?
+        for i in 0..16 {
+            if *p.add(i) == 0 {
+                // We aren't at a whitespace char anymore
+                return;
+            } else {
+                c.offset += 1;
+            }
+        }
+    }
 }
 
 // Parse any amount of whitespace, including comments
 fn consume_ws(c: &mut ParseContext) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        simd_consume_ws(c);
+    }
+
     while c.offset < c.content.len() {
         match c.content[c.offset] as char {
             ' '  => c.offset += 1,
             '\n' => c.offset += 1,
+            '\t' => c.offset += 1,
             '/' => if !consume_comment(c) {
                 break
             },
@@ -393,6 +446,7 @@ fn consume_comment(c: &mut ParseContext) -> bool {
     let mut one;
     let mut two = 0;
 
+    // TODO: SIMD to search for */
     while c.offset < c.content.len() {
         one = two;
         two = c.content[c.offset];

@@ -65,8 +65,9 @@ impl ParseState {
     fn pop_path_to_parse(&mut self) -> Option<(usize, PathBuf)> {
         self.parse_stack.pop().map(|path| {
             self.running_parsers += 1;
+            let res = (self.file_id, path);
             self.file_id += 1;
-            (self.file_id, path)
+            res
         })
     }
 }

@@ -45,3 +45,11 @@ In C, this expression would be true: `2 && 1`. But this would be false: `2 & 1`.
 The `+=`, `-=`, ..., operators in C are written as `=+`, `=-`, ...
 
 This leads to some whitespace dependence to avoid ambiguity. Specifically, `a =*b` is the same as `a =* b`, but is different than `a = *b`. Similarly with `=-`.
+
+## Compiler notes
+### UTF-8
+- It will mostly work inside comments (except for UTF-8 sequences with trailing `*/` bytes!).
+- It won't work anywhere else
+
+### SIMD
+Compile with `RUSTFLAGS='-C target-feature=+avx2'` to leverage SIMD in the lexer. It slightly improves performance
