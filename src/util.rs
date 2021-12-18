@@ -19,3 +19,17 @@ fn try_logical_cpu_count() -> Result<usize, io::Error> {
     }
     Ok(logical_cpus)
 }
+
+const DE_BRUIJN_LBS_BIT_POS: [u32; 32] = [
+    0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8, 
+    31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9
+];
+/// TL;DR Fucking fast algos to find the least significant bit and most significant
+/// It will find the value in 4 arithmetic operations and a memory lookup.
+/// # References
+/// http://supertech.csail.mit.edu/papers/debruijn.pdf
+pub fn lsb_number(v: u32) -> u32 {
+    let vi = v as i32;
+    let index = ((((vi & -vi) as u32).wrapping_mul(0x077CB531u32))).wrapping_shr(27);
+    return DE_BRUIJN_LBS_BIT_POS[index as usize];
+}

@@ -1,3 +1,5 @@
+
+    /* test comment */
 doubleplus1(xref) {
     *xref = *xref + *xref;
     *xref = 1 + **&xref;
