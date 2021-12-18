@@ -1,5 +1,6 @@
 use crate::parser::ParseContext;
 use crate::ast::{Pos, CompErr};
+use crate::util::lsb_number;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 use std::arch::x86_64::*;
@@ -349,80 +350,95 @@ fn get_tok_word(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 }
 
 /**
- * Extract an alphanumeric slice at the given offset
+ * Extract an alphanumeric (and underscore) slice at the given offset
  * @return An empty slice if the offset is out of bounds,
  *         or if there are no alphanumeric characters at that position
  */
 fn alphanumeric_slice<'a>(
     pos: &Pos, slice: &'a [u8], offset: usize
 ) -> Result<&'a str, CompErr> {
-    let mut len = 0;
-    // TODO: SIMD
-    while offset + len < slice.len() {
-        let c = slice[offset + len] as char;
-        if c.is_alphanumeric() || c == '_' {
-            len += 1;
-        } else {
-            break;
-        }
-    }
+    let len = alphanumeric_len(slice, offset);
     match std::str::from_utf8(&slice[offset..offset + len]) {
         Ok(s) => Ok(s),
         _     => CompErr::err(pos, "Only ASCII is supported".to_string()),
     }
 }
 
+pub fn is_alpha(c: u8) -> bool {
+    (c >= 97 && c <= 122) | (c >= 65 && c <= 90) | (c >= 48 && c <= 57) | (c == 95)
+}
+
+fn alphanumeric_len(
+    slice: &[u8], offset: usize
+) -> usize {
+    let mut len = 0;
+
+    while offset + len < slice.len() {
+        if is_alpha(slice[offset + len]) {
+            len += 1;
+        } else {
+            break;
+        }
+    }
+    len
+}
+
+/// Returns true when it hit the end of the ws
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-unsafe fn simd_consume_ws(c: &mut ParseContext) {
-    let space = ' ' as i8;
-    let space_vec = _mm_set_epi8(
-        space, space, space, space,
-        space, space, space, space,
-        space, space, space, space,
-        space, space, space, space
-    );
-    // Bitmask that covers both newlines & tabs.
-    // It also covers a bunch of other chars that we don't care about
-    let nl_tab = 0b00001000i8;
-    let nl_tab_vec = _mm_set_epi8(
-        nl_tab, nl_tab, nl_tab, nl_tab,
-        nl_tab, nl_tab, nl_tab, nl_tab,
-        nl_tab, nl_tab, nl_tab, nl_tab,
-        nl_tab, nl_tab, nl_tab, nl_tab
-    );
+#[allow(overflowing_literals)]
+unsafe fn simd_consume_ws(c: &mut ParseContext) -> bool {
+    let space_vec = _mm_set1_epi8(' ' as i8);
+    // Hack to reduce number of ops to find newlines & tabs
+    let tab_nl_vec = _mm_set1_epi8(0b11111000);
+    let tab_nl_stat_vec = _mm_set1_epi8(0b00001111);
+
     while c.offset + 16 < c.content.len() {
         let values = _mm_loadu_si128(&c.content[c.offset] as *const u8 as *const _);
-        let result = _mm_or_si128(
+
+        // Values will be 255 if they're whitespace
+        // andnot(a, b) does ((NOT a) AND b)
+        let result = _mm_andnot_si128(
             _mm_cmpeq_epi8(values, space_vec),
-            _mm_cmpeq_epi8(values, nl_tab_vec)
+            // In this case, gt is the same as neq
+            _mm_cmpgt_epi8(
+                _mm_and_si128(values, tab_nl_vec),
+                tab_nl_stat_vec
+            )
         );
 
-        let p = &result as *const _ as *const u8;
+        // Compute bitmask of which values are 255
+        // Mask is zeros going from from right to left
+        let mask = _mm_movemask_epi8(result) as u32;
 
-        // TODO: Is there a better way than a filthy for loop?
-        for i in 0..16 {
-            if *p.add(i) == 0 {
-                // We aren't at a whitespace char anymore
-                return;
-            } else {
-                c.offset += 1;
+        if mask == 0 {
+            c.offset += 16;
+        } else {
+            let lsb = lsb_number(mask);
+
+            c.offset += lsb as usize;
+
+            // We know that lsb < 16 and c.offset + 16 was in bounds
+            // So it's safe to assume `c.offset` is still a valid offset here
+            if c.content[c.offset] != ('/' as u8) || !consume_comment(c) {
+                return true;
             }
         }
     }
+    false
 }
 
 // Parse any amount of whitespace, including comments
 fn consume_ws(c: &mut ParseContext) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe {
-        simd_consume_ws(c);
+        if simd_consume_ws(c) {
+            return;
+        }
     }
 
     while c.offset < c.content.len() {
         match c.content[c.offset] as char {
-            ' '  => c.offset += 1,
-            '\n' => c.offset += 1,
-            '\t' => c.offset += 1,
+            ' ' | '\n' | '\t'  => c.offset += 1,
             '/' => if !consume_comment(c) {
                 break
             },
@@ -438,15 +454,40 @@ fn consume_ws(c: &mut ParseContext) {
 fn consume_comment(c: &mut ParseContext) -> bool {
     if c.offset + 1 >= c.content.len() {
         return false;
-    } else if c.content[c.offset + 1] as char != '*' {
+    } else if c.content[c.offset + 1] != '*' as u8 {
         return false;
     }
     c.offset += 2;
 
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        let asterisk_vec = _mm_set1_epi8('*' as i8);
+        let slash_vec = _mm_set1_epi8('/' as i8);
+        while c.offset + 16 < c.content.len() {
+            let values = _mm_loadu_si128(&c.content[c.offset] as *const u8 as *const _);
+
+            let asterisks = _mm_cmpeq_epi8(values, asterisk_vec);
+            let slashes   = _mm_cmpeq_epi8(values, slash_vec);
+
+            let asterisk_mask = _mm_movemask_epi8(asterisks) as u32;
+            let slash_mask    = _mm_movemask_epi8(slashes) as u32;
+
+            let mask = asterisk_mask & slash_mask.wrapping_shr(1);
+
+            if mask == 0 {
+                // Only + 15 in case the */ is at the end of the current vector
+                c.offset += 15;
+            } else {
+                let lsb = lsb_number(mask);
+                c.offset += lsb as usize + 2; // +2 for the */
+                return true;
+            }
+        }
+    }
+
     let mut one;
     let mut two = 0;
 
-    // TODO: SIMD to search for */
     while c.offset < c.content.len() {
         one = two;
         two = c.content[c.offset];

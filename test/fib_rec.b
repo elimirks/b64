@@ -1,6 +1,3 @@
-  
-
-
 /* Returns nonsense for n < 0 */
 fib(n) {
   return(
@@ -11,6 +8,9 @@ fib(n) {
 }
 
 main() {
+    auto x;
+    x = 2;
+    /* Should return "55" */
     return(fib(10));
 }
 
