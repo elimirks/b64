@@ -173,7 +173,7 @@ fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 // Returns a metaprogramming token
 fn get_tok_meta(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
-    let next_word = alphanumeric_slice(&pos, &c.content, c.offset + 1)?;
+    let next_word = id_slice(&pos, &c.content, c.offset + 1)?;
 
     match next_word {
         "import" => {
@@ -228,7 +228,7 @@ fn get_tok_int(
     c: &mut ParseContext, radix: u32
 ) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
-    let current_word = alphanumeric_slice(&pos, &c.content, c.offset)?;
+    let current_word = id_slice(&pos, &c.content, c.offset)?;
     // TODO: No need to allocate a new string here. Reimplement from radix!
     let str_word: String = current_word.to_string();
 
@@ -319,7 +319,7 @@ fn get_inside_quotes(
 // Parsed word-like tokens. Includes keywords and IDs
 fn get_tok_word(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
-    let slice = alphanumeric_slice(&pos, &c.content, c.offset)?;
+    let slice = id_slice(&pos, &c.content, c.offset)?;
     c.offset += slice.len();
 
     // Safe to assume it's valid utf8 since we enforce ASCII
@@ -354,28 +354,45 @@ fn get_tok_word(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
  * @return An empty slice if the offset is out of bounds,
  *         or if there are no alphanumeric characters at that position
  */
-fn alphanumeric_slice<'a>(
+fn id_slice<'a>(
     pos: &Pos, slice: &'a [u8], offset: usize
 ) -> Result<&'a str, CompErr> {
-    let len = alphanumeric_len(slice, offset);
-    match std::str::from_utf8(&slice[offset..offset + len]) {
-        Ok(s) => Ok(s),
-        _     => CompErr::err(pos, "Only ASCII is supported".to_string()),
+    let len = id_len(slice, offset);
+
+    if len == usize::MAX {
+        return CompErr::err(pos, "Only ASCII is supported".to_string());
+    }
+
+    unsafe {
+        Ok(std::str::from_utf8_unchecked(&slice[offset..offset + len]))
     }
 }
 
-pub fn is_alpha(c: u8) -> bool {
-    (c >= 97 && c <= 122) | (c >= 65 && c <= 90) | (c >= 48 && c <= 57) | (c == 95)
+/// Returns usize::MAX if there are invalid ASCII characters
+fn id_len(
+    slice: &[u8], offset: usize
+) -> usize {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        return simd_id_len( slice, offset);
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    return non_simd_id_len(slice, offset);
 }
 
-fn alphanumeric_len(
+fn non_simd_id_len(
     slice: &[u8], offset: usize
 ) -> usize {
     let mut len = 0;
 
     while offset + len < slice.len() {
-        if is_alpha(slice[offset + len]) {
+        let c = slice[offset + len];
+
+        if is_alphanum_underscore(c) {
             len += 1;
+        } else if c > 0b01111111 {
+            return usize::MAX;
         } else {
             break;
         }
@@ -383,10 +400,85 @@ fn alphanumeric_len(
     len
 }
 
-/// Returns true when it hit the end of the ws
+fn is_alphanum_underscore(c: u8) -> bool {
+    (c >= 97 && c <= 122) | (c >= 65 && c <= 90) | (c >= 48 && c <= 57) | (c == 95)
+}
+
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[allow(overflowing_literals)]
-unsafe fn simd_consume_ws(c: &mut ParseContext) -> bool {
+unsafe fn simd_id_len(
+    slice: &[u8], offset: usize
+) -> usize {
+    let mut tail_offset = offset;
+
+    let ascii_mask = _mm_set1_epi8(0b01111111);
+    let alpha_min_bound = _mm_set1_epi8('a' as i8 - 1);
+    let alpha_max_bound = _mm_set1_epi8('z' as i8 + 1);
+    // ORing a letter with 0x20 will convert it to lowercase
+    // So we won't have to do another check for A-Z
+    let to_lower_bit_vec = _mm_set1_epi8(0x20);
+
+    let num_min_bound = _mm_set1_epi8('0' as i8);
+    let num_max_bound = _mm_set1_epi8('9' as i8);
+    let underscore_vec = _mm_set1_epi8('_' as i8);
+
+    while tail_offset + 16 < slice.len() {
+        let mut values = _mm_loadu_si128(&slice[tail_offset] as *const u8 as *const _);
+
+        let only_ascii = _mm_movemask_epi8(_mm_cmpgt_epi8(values, ascii_mask));
+        if only_ascii != 0 {
+            return usize::MAX;
+        }
+
+        /* Operations are inverted so we end up with a bitmask of
+         * which characters are NOT alphanumeric / underscore
+         */
+
+        // Underscore & number check
+        let mut result = _mm_andnot_si128(
+            _mm_cmpeq_epi8(values, underscore_vec),
+            _mm_or_si128(
+                _mm_cmpgt_epi8(values, num_max_bound),
+                _mm_cmpgt_epi8(num_min_bound, values),
+            )
+        );
+
+        // Convert to lowercase
+        values = _mm_or_si128(to_lower_bit_vec, values);
+
+        // Alpha check
+        result = _mm_andnot_si128(
+            _mm_and_si128(
+                _mm_cmpgt_epi8(values, alpha_min_bound),
+                _mm_cmpgt_epi8(alpha_max_bound, values),
+            ),
+            result
+        );
+
+        // Compute bitmask of which values are 255
+        // Mask is zeros going from from right to left
+        let mask = _mm_movemask_epi8(result) as u32;
+
+        // 16 valid characters
+        if mask == 0 {
+            tail_offset += 16;
+        } else {
+            let lsb = lsb_number(mask);
+            return (tail_offset + lsb as usize) - offset;
+        }
+    }
+    // Fallback to non-SIMD
+    let eof_len = non_simd_id_len(slice, tail_offset);
+    if eof_len == usize::MAX {
+        eof_len
+    } else {
+        eof_len + (tail_offset - offset)
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[allow(overflowing_literals)]
+unsafe fn simd_consume_ws(c: &mut ParseContext) {
     let space_vec = _mm_set1_epi8(' ' as i8);
     // Hack to reduce number of ops to find newlines & tabs
     let tab_nl_vec = _mm_set1_epi8(0b11111000);
@@ -417,25 +509,16 @@ unsafe fn simd_consume_ws(c: &mut ParseContext) -> bool {
 
             c.offset += lsb as usize;
 
-            // We know that lsb < 16 and c.offset + 16 was in bounds
-            // So it's safe to assume `c.offset` is still a valid offset here
-            if c.content[c.offset] != ('/' as u8) || !consume_comment(c) {
-                return true;
+            if !consume_comment(c) {
+                return;
             }
         }
     }
-    false
+    // If we're near the end of the file, fallback to classic mode
+    non_simd_consume_ws(c);
 }
 
-// Parse any amount of whitespace, including comments
-fn consume_ws(c: &mut ParseContext) {
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-    unsafe {
-        if simd_consume_ws(c) {
-            return;
-        }
-    }
-
+fn non_simd_consume_ws(c: &mut ParseContext) {
     while c.offset < c.content.len() {
         match c.content[c.offset] as char {
             ' ' | '\n' | '\t'  => c.offset += 1,
@@ -447,36 +530,56 @@ fn consume_ws(c: &mut ParseContext) {
     }
 }
 
+// Parse any amount of whitespace, including comments
+fn consume_ws(c: &mut ParseContext) {
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        simd_consume_ws(c);
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    non_simd_consume_ws(c);
+}
+
 /**
- * When calling this, it assumes self.content[self.offset] = '/'
  * @return true if it successfully parsed a comment
  */
 fn consume_comment(c: &mut ParseContext) -> bool {
     if c.offset + 1 >= c.content.len() {
         return false;
-    } else if c.content[c.offset + 1] != '*' as u8 {
-        return false;
+    }
+    unsafe {
+        // Hacky way to compare for both /* at the same time
+        let x: *const u16 = &c.content[c.offset] as *const u8 as *const _;
+        // * first since we're on assuming little endian (x86 lyfe)
+        if *x != ((('*' as u16) << 8) | ('/' as u16)) {
+            return false;
+        }
     }
     c.offset += 2;
 
+    /* I found 256 vectors worked better than 128 bit for commments.
+     * It's probably because comments are _usually_ longer than 16 characters.
+     * But for whitespace, 16 characters in a row isn't as common.
+     */
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe {
-        let asterisk_vec = _mm_set1_epi8('*' as i8);
-        let slash_vec = _mm_set1_epi8('/' as i8);
-        while c.offset + 16 < c.content.len() {
-            let values = _mm_loadu_si128(&c.content[c.offset] as *const u8 as *const _);
+        let asterisk_vec = _mm256_set1_epi8('*' as i8);
+        let slash_vec = _mm256_set1_epi8('/' as i8);
+        while c.offset + 32 < c.content.len() {
+            let values = _mm256_loadu_si256(&c.content[c.offset] as *const u8 as *const _);
 
-            let asterisks = _mm_cmpeq_epi8(values, asterisk_vec);
-            let slashes   = _mm_cmpeq_epi8(values, slash_vec);
+            let asterisks = _mm256_cmpeq_epi8(values, asterisk_vec);
+            let slashes   = _mm256_cmpeq_epi8(values, slash_vec);
 
-            let asterisk_mask = _mm_movemask_epi8(asterisks) as u32;
-            let slash_mask    = _mm_movemask_epi8(slashes) as u32;
+            let asterisk_mask = _mm256_movemask_epi8(asterisks) as u32;
+            let slash_mask    = _mm256_movemask_epi8(slashes) as u32;
 
             let mask = asterisk_mask & slash_mask.wrapping_shr(1);
 
             if mask == 0 {
-                // Only + 15 in case the */ is at the end of the current vector
-                c.offset += 15;
+                // Only + 31 in case the */ is at the end of the current vector
+                c.offset += 31;
             } else {
                 let lsb = lsb_number(mask);
                 c.offset += lsb as usize + 2; // +2 for the */
