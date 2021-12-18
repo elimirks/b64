@@ -1,5 +1,6 @@
 use crate::parser::ParseContext;
 use crate::ast::{Pos, CompErr};
+use crate::util::lsb_number;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 use std::arch::x86_64::*;
@@ -349,27 +350,37 @@ fn get_tok_word(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 }
 
 /**
- * Extract an alphanumeric slice at the given offset
+ * Extract an alphanumeric (and underscore) slice at the given offset
  * @return An empty slice if the offset is out of bounds,
  *         or if there are no alphanumeric characters at that position
  */
 fn alphanumeric_slice<'a>(
     pos: &Pos, slice: &'a [u8], offset: usize
 ) -> Result<&'a str, CompErr> {
+    let len = alphanumeric_len(slice, offset);
+    match std::str::from_utf8(&slice[offset..offset + len]) {
+        Ok(s) => Ok(s),
+        _     => CompErr::err(pos, "Only ASCII is supported".to_string()),
+    }
+}
+
+pub fn is_alpha(c: u8) -> bool {
+    (c >= 97 && c <= 122) | (c >= 65 && c <= 90) | (c >= 48 && c <= 57) | (c == 95)
+}
+
+fn alphanumeric_len(
+    slice: &[u8], offset: usize
+) -> usize {
     let mut len = 0;
-    // TODO: SIMD
+
     while offset + len < slice.len() {
-        let c = slice[offset + len] as char;
-        if c.is_alphanumeric() || c == '_' {
+        if is_alpha(slice[offset + len]) {
             len += 1;
         } else {
             break;
         }
     }
-    match std::str::from_utf8(&slice[offset..offset + len]) {
-        Ok(s) => Ok(s),
-        _     => CompErr::err(pos, "Only ASCII is supported".to_string()),
-    }
+    len
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
@@ -397,22 +408,37 @@ unsafe fn simd_consume_ws(c: &mut ParseContext) {
             _mm_cmpeq_epi8(values, nl_tab_vec)
         );
 
-        let p = &result as *const _ as *const u8;
+        // Compute bitmask of which values are 255
+        let k = _mm_set1_epi8(0); // All 1s
+        let cmp = _mm_cmpeq_epi8(result, k); // vector mask
+        let mask = _mm_movemask_epi8(cmp);
 
-        // TODO: Is there a better way than a filthy for loop?
-        for i in 0..16 {
-            if *p.add(i) == 0 {
-                // We aren't at a whitespace char anymore
-                return;
-            } else {
-                c.offset += 1;
-            }
+        // Least significant bit number is the count of non-zeros
+        let lsb = lsb_number(mask as u32);
+
+        if lsb == 0 {
+            // We aren't at a whitespace char anymore
+            return;
+        } else {
+            c.offset += lsb as usize;
         }
     }
 }
 
 // Parse any amount of whitespace, including comments
 fn consume_ws(c: &mut ParseContext) {
+    if c.offset < c.content.len() {
+        match c.content[c.offset] as char {
+            ' '  => c.offset += 1,
+            '\n' => c.offset += 1,
+            '\t' => c.offset += 1,
+            '/' => if !consume_comment(c) {
+                return
+            },
+            _ => return,
+        }
+    }
+
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe {
         simd_consume_ws(c);
