@@ -30,6 +30,6 @@ const DE_BRUIJN_LBS_BIT_POS: [u32; 32] = [
 /// http://supertech.csail.mit.edu/papers/debruijn.pdf
 pub fn lsb_number(v: u32) -> u32 {
     let vi = v as i32;
-    let index = ((((vi & -vi) as u32).wrapping_mul(0x077CB531u32))).wrapping_shr(27);
+    let index = ((vi & -vi) as u32).wrapping_mul(0x077CB531u32).wrapping_shr(27);
     return DE_BRUIJN_LBS_BIT_POS[index as usize];
 }

@@ -84,14 +84,6 @@ pub struct ParseContext<'a> {
 }
 
 impl ParseContext<'_> {
-    pub fn peek_char(&self) -> Option<char> {
-        if self.offset < self.content.len() {
-            Some(self.content[self.offset] as char)
-        } else {
-            None
-        }
-    }
-
     pub fn pos(&self) -> Pos {
         Pos::new(self.offset, self.file_id)
     }

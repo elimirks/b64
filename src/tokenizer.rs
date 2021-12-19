@@ -83,29 +83,22 @@ pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     // Seek past useless whitespace
     consume_ws(c);
 
-    match c.peek_char() {
-        Some('0') => {
-            get_tok_int(c, 8)
-        },
-        Some(ch) => {
-            if ch == '_' || ch.is_alphabetic() {
-                get_tok_word(c)
-            } else if ch.is_numeric() {
-                get_tok_int(c, 10)
-            } else if ch == '\'' {
-                get_tok_char(c)
-            } else if ch == '\"' {
-                get_tok_str(c)
-            } else if ch == '=' {
-                // Handle '=' differently because of the chaining rule
-                Ok(get_tok_equals(c))
-            } else if ch == '@' {
-                get_tok_meta(c)
-            } else {
-                get_tok_symbol(c)
-            }
-        },
-        None => Ok((c.pos(), Token::Eof)),
+    if c.offset >= c.content.len() {
+        return Ok((c.pos(), Token::Eof));
+    }
+
+    let ch = unsafe { *c.content.get_unchecked(c.offset) };
+
+    match ch as char {
+        '\''                        => get_tok_char(c),
+        '\"'                        => get_tok_str(c),
+        '@'                         => get_tok_meta(c),
+        // Handle '=' differently because of the chaining rule
+        '='                         => Ok(get_tok_equals(c)),
+        '_' | 'a'..='z' | 'A'..='Z' => get_tok_word(c),
+        '1'..='9'                   => get_tok_int_decimal(c),
+        '0'                         => get_tok_int_octal(c),
+        _                           => get_tok_symbol(c),
     }
 }
 
@@ -116,14 +109,22 @@ pub fn push_tok(c: &mut ParseContext, tok: (Pos, Token)) {
 // Generates a symbol tokenizer match statemnt for ambiguous multi-char tokens
 macro_rules! multi_tok {
     ($context:expr, $pos:expr, $default:expr, $($extra:expr, $token:expr),*) => {
-        match $context.peek_char() {
-            $(
-                Some($extra) => {
-                    $context.offset += 1;
-                    Ok(($pos, $token))
-                },
-            )*
-            _ => Ok(($pos, $default)),
+        if $context.offset >= $context.content.len() {
+            Ok(($pos, $default))
+        } else {
+            let ch = unsafe {
+                *$context.content.get_unchecked($context.offset)
+            };
+
+            match ch as char {
+                $(
+                    $extra => {
+                        $context.offset += 1;
+                        Ok(($pos, $token))
+                    },
+                )*
+                _ => Ok(($pos, $default)),
+            }
         }
     };
 }
@@ -132,7 +133,7 @@ macro_rules! multi_tok {
 fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
     c.offset += 1;
-    match c.content[c.offset - 1] as char {
+    match unsafe { *c.content.get_unchecked(c.offset - 1) } as char {
         '+' => multi_tok!(c, pos, Token::Plus,
                           '+', Token::PlusPlus),
         '-' => multi_tok!(c, pos, Token::Minus,
@@ -189,16 +190,18 @@ fn get_tok_meta(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 // Assumes the character at the current point is =
 fn get_tok_equals(c: &mut ParseContext) -> (Pos, Token) {
     // Peek at the next 2 chars
-    let c1 = match c.content.get(c.offset + 1) {
-        Some(value) => *value as char,
-        None        => ' ',
-    };
-    let c2 = match c.content.get(c.offset + 2) {
-        Some(value) => *value as char,
-        None        => ' ',
+    let (c1, c2) = unsafe {
+        if c.offset + 2 < c.content.len() {
+            (*c.content.get_unchecked(c.offset + 1),
+             *c.content.get_unchecked(c.offset + 2))
+        } else if c.offset + 1 < c.content.len() {
+            (*c.content.get_unchecked(c.offset + 1), 0)
+        } else {
+            (0, 0)
+        }
     };
 
-    let (len, tok) = match (c1, c2) {
+    let (len, tok) = match (c1 as char, c2 as char) {
         ('>', '>') => (3, Token::EqShiftRight),
         ('>', '=') => (3, Token::EqGe),
         ('<', '<') => (3, Token::EqShiftLeft),
@@ -224,28 +227,68 @@ fn get_tok_equals(c: &mut ParseContext) -> (Pos, Token) {
     (pos, tok)
 }
 
-fn get_tok_int(
-    c: &mut ParseContext, radix: u32
+fn get_tok_int_octal(
+    c: &mut ParseContext
 ) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
     let current_word = id_slice(&pos, &c.content, c.offset)?;
-    // TODO: No need to allocate a new string here. Reimplement from radix!
-    let str_word: String = current_word.to_string();
 
-    match i64::from_str_radix(&str_word, radix) {
-        Ok(num) => {
-            c.offset += current_word.len();
-            Ok((pos, Token::Int(num)))
-        },
-        _ => CompErr::err(&pos, format!(
-            "Invalid int literal: {}", str_word)),
+    let mut value = 0;
+    let mut significance = 1;
+
+    for c in current_word.bytes().rev() {
+        if c > '7' as u8 || c < '0' as u8 {
+            return CompErr::err(&pos, format!(
+                "Invalid int literal: {}", current_word));
+        }
+        let x = c as i64 - '0' as i64;
+
+        if value > i64::MAX - x * significance {
+            return CompErr::err(&pos, format!(
+                "Invalid int literal: {}", current_word));
+        }
+        value += x * significance;
+
+        significance *= 8;
     }
+    c.offset += current_word.len();
+    Ok((pos, Token::Int(value)))
+}
+
+fn get_tok_int_decimal(
+    c: &mut ParseContext
+) -> Result<(Pos, Token), CompErr> {
+    let pos = c.pos();
+    let current_word = id_slice(&pos, &c.content, c.offset)?;
+
+    let mut value = 0;
+    let mut significance = 1;
+
+    for c in current_word.bytes().rev() {
+        if c > '9' as u8 || c < '0' as u8 {
+            return CompErr::err(&pos, format!(
+                "Invalid int literal: {}", current_word));
+        }
+        let x = c as i64 - '0' as i64;
+
+        if value > i64::MAX - x * significance {
+            return CompErr::err(&pos, format!(
+                "Invalid int literal: {}", current_word));
+        }
+        value += x * significance;
+
+        significance *= 10;
+    }
+    c.offset += current_word.len();
+    Ok((pos, Token::Int(value)))
 }
 
 fn get_tok_str(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
     c.offset += 1;
-    let values = get_inside_quotes(c, '\"')?;
+    let values = unsafe {
+        get_inside_quotes(c, '\"')?
+    };
     c.offset += 1;
     Ok((pos, Token::Str(values)))
 }
@@ -257,7 +300,9 @@ fn get_tok_str(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
     c.offset += 1;
-    let chars = get_inside_quotes(c, '\'')?;
+    let chars = unsafe {
+        get_inside_quotes(c, '\'')?
+    };
 
     if chars.len() > 8 {
         CompErr::err(&pos, "A wide char may be at most 8 bytes".to_string())
@@ -268,14 +313,14 @@ fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 }
 
 // Gets chars enclosed in the given terminal character
-fn get_inside_quotes(
+unsafe fn get_inside_quotes(
     c: &mut ParseContext, terminal: char
 ) -> Result<Vec<char>, CompErr> {
     let mut i = c.offset;
     let mut chars = vec!();
 
-    while i < c.content.len() && c.content[i] as char != terminal {
-        let chr = match c.content[i] as char {
+    while i < c.content.len() && *c.content.get_unchecked(i) as char != terminal {
+        let chr = match *c.content.get_unchecked(i) as char {
             '*' => {
                 i += 1;
                 // Hit EOF while parsing char
@@ -283,7 +328,7 @@ fn get_inside_quotes(
                     return CompErr::err(
                         &c.pos(), "Hit EOF while parsing char".to_string());
                 }
-                match c.content[i] as char {
+                match *c.content.get_unchecked(i) as char {
                     '*'  => '*',
                     'n'  => '\n',
                     '0'  => '\0',
@@ -336,12 +381,19 @@ fn get_tok_word(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
         word => {
             let name: String = word.to_string();
 
-            match c.peek_char() {
-                Some(':') => {
+            if c.offset >= c.content.len() {
+                Token::Id(name)
+            } else {
+                let ch = unsafe {
+                    *c.content.get_unchecked(c.offset)
+                };
+
+                if ch == ':' as u8 {
                     c.offset += 1;
                     Token::Label(name)
-                },
-                _ => Token::Id(name),
+                } else {
+                    Token::Id(name)
+                }
             }
         },
     };
@@ -364,7 +416,8 @@ fn id_slice<'a>(
     }
 
     unsafe {
-        Ok(std::str::from_utf8_unchecked(&slice[offset..offset + len]))
+        Ok(std::str::from_utf8_unchecked(
+            slice.get_unchecked(offset..offset + len)))
     }
 }
 
@@ -372,22 +425,22 @@ fn id_slice<'a>(
 fn id_len(
     slice: &[u8], offset: usize
 ) -> usize {
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         return simd_id_len( slice, offset);
-    }
 
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
-    return non_simd_id_len(slice, offset);
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        return non_simd_id_len(slice, offset);
+    }
 }
 
-fn non_simd_id_len(
+unsafe fn non_simd_id_len(
     slice: &[u8], offset: usize
 ) -> usize {
     let mut len = 0;
 
     while offset + len < slice.len() {
-        let c = slice[offset + len];
+        let c = *slice.get_unchecked(offset + len);
 
         if is_alphanum_underscore(c) {
             len += 1;
@@ -423,7 +476,8 @@ unsafe fn simd_id_len(
     let underscore_vec = _mm_set1_epi8('_' as i8);
 
     while tail_offset + 16 < slice.len() {
-        let mut values = _mm_loadu_si128(&slice[tail_offset] as *const u8 as *const _);
+        let mut values = _mm_loadu_si128(
+            slice.get_unchecked(tail_offset) as *const u8 as *const _);
 
         let only_ascii = _mm_movemask_epi8(_mm_cmpgt_epi8(values, ascii_mask));
         if only_ascii != 0 {
@@ -485,7 +539,8 @@ unsafe fn simd_consume_ws(c: &mut ParseContext) {
     let tab_nl_stat_vec = _mm_set1_epi8(0b00001111);
 
     while c.offset + 16 < c.content.len() {
-        let values = _mm_loadu_si128(&c.content[c.offset] as *const u8 as *const _);
+        let values = _mm_loadu_si128(
+            c.content.get_unchecked(c.offset) as *const u8 as *const _);
 
         // Values will be 255 if they're whitespace
         // andnot(a, b) does ((NOT a) AND b)
@@ -518,9 +573,9 @@ unsafe fn simd_consume_ws(c: &mut ParseContext) {
     non_simd_consume_ws(c);
 }
 
-fn non_simd_consume_ws(c: &mut ParseContext) {
+unsafe fn non_simd_consume_ws(c: &mut ParseContext) {
     while c.offset < c.content.len() {
-        match c.content[c.offset] as char {
+        match *c.content.get_unchecked(c.offset) as char {
             ' ' | '\n' | '\t'  => c.offset += 1,
             '/' => if !consume_comment(c) {
                 break
@@ -532,13 +587,13 @@ fn non_simd_consume_ws(c: &mut ParseContext) {
 
 // Parse any amount of whitespace, including comments
 fn consume_ws(c: &mut ParseContext) {
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     unsafe {
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         simd_consume_ws(c);
-    }
 
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
-    non_simd_consume_ws(c);
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        non_simd_consume_ws(c);
+    }
 }
 
 /**
@@ -549,8 +604,8 @@ fn consume_comment(c: &mut ParseContext) -> bool {
         return false;
     }
     unsafe {
-        // Hacky way to compare for both /* at the same time
-        let x: *const u16 = &c.content[c.offset] as *const u8 as *const _;
+        // Hacky way to compare for both /* at the same time with bounds check
+        let x: *const u16 = c.content.as_ptr().add(c.offset) as *const u8 as *const _;
         // * first since we're on assuming little endian (x86 lyfe)
         if *x != ((('*' as u16) << 8) | ('/' as u16)) {
             return false;
@@ -567,7 +622,8 @@ fn consume_comment(c: &mut ParseContext) -> bool {
         let asterisk_vec = _mm256_set1_epi8('*' as i8);
         let slash_vec = _mm256_set1_epi8('/' as i8);
         while c.offset + 32 < c.content.len() {
-            let values = _mm256_loadu_si256(&c.content[c.offset] as *const u8 as *const _);
+            let values = _mm256_loadu_si256(
+                c.content.get_unchecked(c.offset) as *const u8 as *const _);
 
             let asterisks = _mm256_cmpeq_epi8(values, asterisk_vec);
             let slashes   = _mm256_cmpeq_epi8(values, slash_vec);
@@ -593,7 +649,9 @@ fn consume_comment(c: &mut ParseContext) -> bool {
 
     while c.offset < c.content.len() {
         one = two;
-        two = c.content[c.offset];
+        two = unsafe {
+            *c.content.get_unchecked(c.offset)
+        };
         c.offset += 1;
 
         if one == '*' as u8 && two == '/' as u8 {

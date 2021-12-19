@@ -52,4 +52,4 @@ This leads to some whitespace dependence to avoid ambiguity. Specifically, `a =*
 - It won't work anywhere else
 
 ### SIMD
-Compile with `RUSTFLAGS='-C target-feature=+avx2'` to leverage SIMD in the lexer. It slightly improves performance
+Compile with `RUSTFLAGS='-C target-feature=+avx2'` to leverage SIMD in the lexer. It slightly improves throughput (by about 1% from my benchmarks).
