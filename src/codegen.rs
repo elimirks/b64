@@ -1,3 +1,4 @@
+use std::sync::Condvar;
 use std::collections::HashMap;
 use std::io::BufWriter;
 use std::io::Write;
@@ -10,6 +11,7 @@ use crate::parser::*;
 use crate::util::logical_cpu_count;
 
 struct CodeGenPool {
+    running_fibers: usize,
     functions: Vec<RSFunction>,
     // Function name -> instructions
     results: Vec<(String, Vec<String>)>,
@@ -1221,36 +1223,49 @@ fn gen(
     CompErr::from_io_res(generate_strings(&strings, &mut w))?;
     CompErr::from_io_res(generate_start(&root_vars, &mut w))?;
 
-    let pool_mutex = Arc::new(Mutex::new(CodeGenPool {
+    let pool = Arc::new((Mutex::new(CodeGenPool {
+        running_fibers: 0,
         functions: functions,
         results: vec!(),
         errors: vec!(),
-    }));
+    }), Condvar::new()));
 
     let thread_count = logical_cpu_count();
     let arc_global_scope = Arc::new(global_scope);
 
     let mut handles = Vec::with_capacity(thread_count);
     for _ in 0..thread_count {
-        let th_pool_mutex = pool_mutex.clone();
+        let th_pool_mutex = pool.clone();
         let th_global_scope = arc_global_scope.clone();
 
         handles.push(thread::spawn(move || {
             codegen_fiber(th_global_scope, th_pool_mutex);
         }))
     }
+
+    loop {
+        match pop_pool_result(&pool) {
+            Some((func_name, instructions)) => {
+                CompErr::from_io_res(writeln!(w, "{}:", func_name))?;
+                for instruction in instructions {
+                    CompErr::from_io_res(writeln!(w, "    {}", instruction))?;
+                }
+            },
+            None => break,
+        }
+    }
+
     for handle in handles {
         handle.join().unwrap();
     }
 
-    let guard = pool_mutex.lock().unwrap();
+    let guard = pool.0.lock().unwrap();
 
     if !guard.errors.is_empty() {
         return Err(guard.errors[0].clone());
     }
 
-    // TODO: Do this while we wait for the threads!?
-    // Use a Condvar to spinlock until a new "batch" is ready to write
+    // Might be redundant. TODO: Double check!!!
     for (func_name, instructions) in guard.results.iter() {
         CompErr::from_io_res(writeln!(w, "{}:", func_name))?;
         for instruction in instructions {
@@ -1260,14 +1275,31 @@ fn gen(
     Ok(())
 }
 
+fn pop_pool_result(
+    pool: &Arc<(Mutex<CodeGenPool>, Condvar)>
+) -> Option<(String, Vec<String>)> {
+    let (mutex, cvar) = pool.as_ref();
+    let mut guard = mutex.lock().unwrap();
+
+    while guard.results.is_empty() && guard.running_fibers != 0 {
+        guard = cvar.wait(guard).unwrap();
+    }
+    guard.results.pop()
+}
+
 fn unpool_function(
-    pool: &Arc<Mutex<CodeGenPool>>
+    pool: &Arc<(Mutex<CodeGenPool>, Condvar)>
 ) -> Option<(usize, RSFunction)> {
-    let mut guard = pool.lock().unwrap();
+    let mut guard = pool.0.lock().unwrap();
     let func_id = guard.functions.len();
+
+    if !guard.errors.is_empty() {
+        return None;
+    }
 
     match guard.functions.pop() {
         Some(fun) => {
+            guard.running_fibers += 1;
             Some((func_id, fun))
         },
         None      => None,
@@ -1276,7 +1308,7 @@ fn unpool_function(
 
 fn codegen_fiber(
     global_scope: Arc<HashMap<String, ScopeEntry>>,
-    pool: Arc<Mutex<CodeGenPool>>
+    pool: Arc<(Mutex<CodeGenPool>, Condvar)>
 ) {
     loop {
         match unpool_function(&pool) {
@@ -1294,16 +1326,25 @@ fn codegen_fiber(
 
                 match gen_fun(&mut c, &fun) {
                     Ok(instructions) => {
-                        let mut guard = pool.lock().unwrap();
+                        let (mutex, cvar) = pool.as_ref();
+                        let mut guard = mutex.lock().unwrap();
                         guard.results.push((fun.name, instructions));
+                        guard.running_fibers -= 1;
+                        cvar.notify_all();
                     },
                     Err(err) => {
-                        let mut guard = pool.lock().unwrap();
+                        let (mutex, cvar) = pool.as_ref();
+                        let mut guard = mutex.lock().unwrap();
                         guard.errors.push(err);
+                        guard.running_fibers -= 1;
+                        cvar.notify_all();
                     },
                 }
             },
-            None => return,
+            None => {
+                pool.1.notify_all();
+                return;
+            },
         }
     }
 }
