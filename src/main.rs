@@ -23,6 +23,10 @@ struct Opts {
     inputs: Vec<String>,
 }
 
+// jemalloc performs a lot better in multithreaded applications
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 fn main() {
     let opts = parse_opts();
 
