@@ -9,7 +9,7 @@ for i in $(seq $GARBAGE_COUNT); do
 done
 
 for i in `seq 10000`; do
-        echo "@import \"garb_${i}.b\";"
+        echo "#import \"garb_${i}.b\";"
 done > all_garbage.b
 
 # Run b64 against "all_garbage.b" to benchmark

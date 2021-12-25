@@ -1,5 +1,5 @@
-@import "../assets/stdlib.b";
-@import "../assets/memory.b";
+#import "../assets/stdlib.b";
+#import "../assets/memory.b";
 
 main() {
     auto c 10, i 3;

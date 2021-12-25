@@ -1,5 +1,5 @@
-@import "../assets/stdlib.b";
-@import "../assets/memory.b";
+#import "../assets/stdlib.b";
+#import "../assets/memory.b";
 
 func1(xref) {
     *xref = *xref + *xref;

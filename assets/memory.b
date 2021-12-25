@@ -3,6 +3,7 @@ _heapEnd 0;
 
 /**
  * Allocates the given number of quads (64 bit values)
+ * TODO: Use the buddy allocation algorithm some day...
  */
 malloc(count) {
     extrn _heapBegin, _heapEnd;

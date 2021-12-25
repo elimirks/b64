@@ -92,7 +92,7 @@ pub fn pop_tok(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     match ch as char {
         '\''                        => get_tok_char(c),
         '\"'                        => get_tok_str(c),
-        '@'                         => get_tok_meta(c),
+        '#'                         => get_tok_meta(c),
         // Handle '=' differently because of the chaining rule
         '='                         => Ok(get_tok_equals(c)),
         '_' | 'a'..='z' | 'A'..='Z' => get_tok_word(c),
@@ -170,7 +170,7 @@ fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     }
 }
 
-// Assumes the @ token has been parsed
+// Assumes the # token has been parsed
 // Returns a metaprogramming token
 fn get_tok_meta(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
     let pos = c.pos();
@@ -182,7 +182,7 @@ fn get_tok_meta(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
             Ok((c.pos(), Token::Import))
         },
         other => {
-            CompErr::err(&pos, format!("Invalid token: @{}", other))
+            CompErr::err(&pos, format!("Invalid token: #{}", other))
         },
     }
 }

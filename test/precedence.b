@@ -1,4 +1,4 @@
-@import "../assets/stdlib.b";
+#import "../assets/stdlib.b";
 
 main() {
     auto x, y;

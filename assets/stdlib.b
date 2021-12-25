@@ -1,4 +1,4 @@
-@import "memory.b";
+#import "memory.b";
 
 /*
  * Compares 2 strings. Return negative if "s1 < s2"
@@ -161,9 +161,7 @@ num2str(n) {
         putnum(charIndex);
         putchar('*n');
 
-        /* FIXME: Why doesn't shift by 3 work here? */
-        /* str[strIndex] =| *stackTop << (charIndex << 3); */
-        str[strIndex] =| *stackTop << (charIndex * 8);
+        str[strIndex] =| *stackTop << (charIndex << 3);
     }
     return(str);
 }

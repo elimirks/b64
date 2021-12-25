@@ -1,4 +1,4 @@
-@import "../assets/stdlib.b";
+#import "../assets/stdlib.b";
 
 show_strcmp() {
     putstr("strcmp:*n");
