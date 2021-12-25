@@ -429,21 +429,42 @@ fn gen_pre_op(
     Ok((new_lhs_loc, rhs_loc, used_registers))
 }
 
-fn gen_unary_op_assign(
-    c: &mut FunContext, instructions: &mut Vec<String>,
-    asm_op: &str, expr: &Expr
+fn gen_prep_unary_op_incdec(
+    c: &mut FunContext, instructions: &mut Vec<String>, expr: &Expr
 ) -> Result<(Loc, RegSet), CompErr> {
     let (expr_loc, used_registers) = gen_expr(c, instructions, expr)?;
 
     match expr_loc {
         Loc::Register(_) | Loc::Immediate(_) =>
             return CompErr::err(&expr.pos(), format!(
-                "`++` or `--` must operate on a variable")),
+                "`++` or `--` must operate on a memory location")),
         _ => {},
     };
-
-    instructions.push(format!("{} {}", asm_op, expr_loc));
     Ok((expr_loc, used_registers))
+}
+
+fn gen_unary_op_pre_incdec(
+    c: &mut FunContext, instructions: &mut Vec<String>,
+    op_name: &str, expr: &Expr
+) -> Result<(Loc, RegSet), CompErr> {
+    let (expr_loc, used_registers) = gen_prep_unary_op_incdec(c, instructions, expr)?;
+    instructions.push(format!("{} {}", op_name, expr_loc));
+    Ok((expr_loc, used_registers))
+}
+
+fn gen_unary_op_post_incdec(
+    c: &mut FunContext, instructions: &mut Vec<String>,
+    op_name: &str, expr: &Expr
+) -> Result<(Loc, RegSet), CompErr> {
+    let (expr_loc, used_registers) = gen_prep_unary_op_incdec(c, instructions, expr)?;
+
+    // We can pick any register since we know expr_loc MUST NOT be in a register
+    let dest_reg = Reg::R11;
+    let dest_loc = Loc::Register(dest_reg);
+
+    instructions.push(format!("movq {},{}", expr_loc, dest_loc));
+    instructions.push(format!("{} {}", op_name, expr_loc));
+    Ok((dest_loc, used_registers.with(dest_reg)))
 }
 
 fn gen_unary_op_non_assign(
@@ -474,10 +495,12 @@ fn gen_unary_op(
     op: &UnaryOp, expr: &Expr
 ) -> Result<(Loc, RegSet), CompErr> {
     match op {
-        UnaryOp::Increment => gen_unary_op_assign(c, instructions, "incq", expr),
-        UnaryOp::Decrement => gen_unary_op_assign(c, instructions, "decq", expr),
-        UnaryOp::BitNot    => gen_unary_op_non_assign(c, instructions, "notq", expr),
-        UnaryOp::Negate    => gen_unary_op_non_assign(c, instructions, "negq", expr),
+        UnaryOp::PreIncrement  => gen_unary_op_pre_incdec(c, instructions, "incq", expr),
+        UnaryOp::PreDecrement  => gen_unary_op_pre_incdec(c, instructions, "decq", expr),
+        UnaryOp::PostIncrement => gen_unary_op_post_incdec(c, instructions, "incq", expr),
+        UnaryOp::PostDecrement => gen_unary_op_post_incdec(c, instructions, "decq", expr),
+        UnaryOp::BitNot        => gen_unary_op_non_assign(c, instructions, "notq", expr),
+        UnaryOp::Negate        => gen_unary_op_non_assign(c, instructions, "negq", expr),
     }
 }
 
@@ -1378,7 +1401,7 @@ pub fn generate(parse_result: ParseResult, writer: &mut dyn Write) {
     ) {
         Ok(_) => {},
         Err(err) => {
-            print_comp_error(&parse_result.file_contents, &err);
+            print_comp_error(&parse_result.file_paths, &err);
             std::process::exit(1);
         },
     }

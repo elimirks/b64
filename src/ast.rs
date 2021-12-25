@@ -176,8 +176,10 @@ impl BinOp {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnaryOp {
-    Increment,
-    Decrement,
+    PreIncrement,
+    PreDecrement,
+    PostIncrement,
+    PostDecrement,
     Negate,
     BitNot,
 }

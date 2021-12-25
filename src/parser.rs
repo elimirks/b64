@@ -11,8 +11,8 @@ use std::thread;
 
 pub struct ParseResult {
     // Stored in order of file_id (in Pos)
-    // Stores (file_name, file_contents)
-    pub file_contents: Vec<(String, String)>,
+    // Stores (file_name, file_paths)
+    pub file_paths: Vec<(String, PathBuf)>,
     // Stores (file_id, strings_vec)
     pub strings: Vec<(usize, Vec<Vec<char>>)>,
     pub functions: Vec<RSFunction>,
@@ -23,7 +23,7 @@ pub struct ParseResult {
 impl ParseResult {
     fn new() -> ParseResult {
         ParseResult {
-            file_contents: vec!(),
+            file_paths: vec!(),
             strings: vec!(),
             functions: vec!(),
             variables: vec!(),
@@ -475,7 +475,8 @@ fn get_lr_op_precedence(op: &BinOp) -> u8 {
 fn parse_expr_prec(
     c: &mut ParseContext, precedence: u8
 ) -> Result<Expr, CompErr> {
-    let mut expr = parse_expr_unchained(c)?;
+    let unchained = parse_expr_unchained(c)?;
+    let mut expr = parse_postfix(c, unchained)?;
     loop {
         match parse_op(c)? {
             (pos, tok, Some(binop)) => {
@@ -664,9 +665,9 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
         Token::Asterisk => Ok(Expr::Dereference(
             pos, Box::new(parse_expr_unchained(c)?))),
         Token::PlusPlus => Ok(Expr::UnaryOperator(
-            pos, UnaryOp::Increment, Box::new(parse_expr_unchained(c)?))),
+            pos, UnaryOp::PreIncrement, Box::new(parse_expr_unchained(c)?))),
         Token::MinusMinus => Ok(Expr::UnaryOperator(
-            pos, UnaryOp::Decrement, Box::new(parse_expr_unchained(c)?))),
+            pos, UnaryOp::PreDecrement, Box::new(parse_expr_unchained(c)?))),
         Token::Minus => Ok(Expr::UnaryOperator(
             pos, UnaryOp::Negate, Box::new(parse_expr_unchained(c)?))),
         Token::Tilde => Ok(Expr::UnaryOperator(
@@ -679,6 +680,26 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
         },
         other => CompErr::err(&pos, format!(
             "Expected expression. {:?} found", other))
+    }
+}
+
+fn parse_postfix(c: &mut ParseContext, expr: Expr) -> Result<Expr, CompErr> {
+    let (pos, tok) = pop_tok(c)?;
+    match tok {
+        Token::MinusMinus => {
+            let next = parse_postfix(c, expr)?;
+            Ok(Expr::UnaryOperator(
+                pos, UnaryOp::PostDecrement, Box::new(next)))
+        },
+        Token::PlusPlus => {
+            let next = parse_postfix(c, expr)?;
+            Ok(Expr::UnaryOperator(
+                pos, UnaryOp::PostIncrement, Box::new(next)))
+        },
+        _ => {
+            push_tok(c, (pos, tok));
+            Ok(expr)
+        },
     }
 }
 
@@ -750,11 +771,12 @@ fn get_parse_position(content: &Vec<char>, offset: usize) -> (String, usize, usi
     (line.to_string(), row, col)
 }
 
-pub fn print_comp_error(file_contents: &Vec<(String, String)>, err: &CompErr) {
+pub fn print_comp_error(file_paths: &Vec<(String, PathBuf)>, err: &CompErr) {
     println!("Compile error: {}", err.message);
     match &err.pos {
         Some(pos) => {
-            let (file_name, content) = &file_contents[pos.file_id];
+            let (file_name, path_buf) = &file_paths[pos.file_id];
+            let content = std::fs::read_to_string(&path_buf).unwrap();
             println!("In file: {}", file_name);
 
             let (line, row, col) = get_parse_position(
@@ -774,9 +796,8 @@ pub fn print_comp_error(file_contents: &Vec<(String, String)>, err: &CompErr) {
 }
 
 fn parse_content(
-    file_id: usize, content: &String
+    file_id: usize, content: String
 ) -> Result<(RootStatements, Vec<Vec<char>>), CompErr> {
-    // TODO: Validate `content` is valid ASCII first
     let mut c = ParseContext {
         content: content.as_bytes(),
         offset: 0,
@@ -912,7 +933,7 @@ fn parse_file(
 
     let (mutex, cvar) = parse_state.as_ref();
 
-    let parsed_content = parse_content(file_id, &content);
+    let parsed_content = parse_content(file_id, content);
     let mut guard = match mutex.lock() {
         Ok(guard) => guard,
         _         => return, // Poison pill!
@@ -931,12 +952,12 @@ fn parse_file(
             }
             guard.result.functions.append(&mut statements.functions);
             guard.result.variables.append(&mut statements.variables);
-            guard.result.file_contents.push((path_str, content));
+            guard.result.file_paths.push((path_str, path));
             guard.result.strings.push((file_id, strings));
         },
         Err(error) => {
             guard.result.errors.push(error);
-            guard.result.file_contents.push((path_str, content));
+            guard.result.file_paths.push((path_str, path));
         },
     }
     guard.running_parsers -= 1;

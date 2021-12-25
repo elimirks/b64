@@ -170,7 +170,7 @@ fn parse_or_die(inputs: &Vec<String>) -> ParseResult {
     let parse_result = parse_files(inputs);
 
     for err in &parse_result.errors {
-        print_comp_error(&parse_result.file_contents, &err);
+        print_comp_error(&parse_result.file_paths, &err);
     }
     if !parse_result.errors.is_empty() {
         std::process::exit(1);
