@@ -331,6 +331,7 @@ unsafe fn get_inside_quotes(
                 match *c.content.get_unchecked(i) as char {
                     '*'  => '*',
                     'n'  => '\n',
+                    'e'  => 4 as char, // EOT
                     '0'  => '\0',
                     't'  => '\t',
                     '\'' => '\'',
