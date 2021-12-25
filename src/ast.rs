@@ -32,9 +32,9 @@ impl CompErr {
     ) -> Result<T, CompErr> {
         match io_res {
             Ok(result) => Ok(result),
-            Err(_)     => Err(CompErr {
+            Err(err)     => Err(CompErr {
                 pos: None,
-                message: "Failed writing to output".to_string(),
+                message: err.to_string(),
             }),
         }
     }

@@ -212,7 +212,7 @@ fn gen_op_shift(
             gen_op_single(instructions, command, lhs_loc, rhs_loc),
         _ => {
             // Required to use %cl register for non immediates during shifts
-            instructions.push(format!("mov {},%rcx", rhs_loc));
+            instructions.push(format!("movq {},%rcx", rhs_loc));
             instructions.push(format!("{} %cl,{}", command, lhs_loc));
             let used_registers = RegSet::of(Reg::Rcx);
             (lhs_loc, used_registers)
@@ -323,8 +323,8 @@ fn gen_op_command(
         BinOp::Mod        => gen_op_mod(instructions, lhs_loc, rhs_loc),
         BinOp::Div        => gen_op_div(instructions, lhs_loc, rhs_loc),
         BinOp::Mul        => gen_op_mul(instructions, lhs_loc, rhs_loc),
-        BinOp::ShiftRight => gen_op_shift(instructions, "shr", lhs_loc, rhs_loc),
-        BinOp::ShiftLeft  => gen_op_shift(instructions, "shl", lhs_loc, rhs_loc),
+        BinOp::ShiftRight => gen_op_shift(instructions, "shrq", lhs_loc, rhs_loc),
+        BinOp::ShiftLeft  => gen_op_shift(instructions, "shlq", lhs_loc, rhs_loc),
         BinOp::And        => gen_op_single(instructions, "andq", lhs_loc, rhs_loc),
         BinOp::Or         => gen_op_single(instructions, "orq", lhs_loc, rhs_loc),
         BinOp::Xor        => gen_op_single(instructions, "xorq", lhs_loc, rhs_loc),
@@ -339,25 +339,44 @@ fn gen_op_command(
     }
 }
 
+/// Returns the registers that the given op MIGHT use
+fn registers_for_op(
+    op: &BinOp
+) -> RegSet {
+    let fpu_regset = RegSet::of(Reg::Rax).with(Reg::Rdx);
+    let shift_regset = RegSet::of(Reg::Rcx);
+
+    match op {
+        BinOp::ShiftRight => shift_regset,
+        BinOp::ShiftLeft  => shift_regset,
+        BinOp::Mod        => fpu_regset,
+        BinOp::Div        => fpu_regset,
+        BinOp::Mul        => fpu_regset,
+        _                 => RegSet::empty(),
+    }
+}
+
 fn get_safe_registers(used_registers: RegSet) -> RegSet {
     RegSet::usable_caller_save().subtract(&used_registers)
 }
 
-/**
- * Plans evaluation strategy for an LHS and RHS expression.
- * It will try to store the LHS value in a register if possible.
- * Otherwise it stores to the stack.
- * The returned lhs_loc is guaranteed to be in a register
- * @return (instructions, lhs_loc, rhs_loc, used_registers)
- */
+/// Plans evaluation strategy for an LHS and RHS expression.
+/// It will try to store the LHS value in a register if possible.
+/// Otherwise it stores to the stack.
+/// The returned `lhs_loc` is guaranteed to be in a register
+/// Return format: `(instructions, lhs_loc, rhs_loc, used_registers)`
+/// #Arguments
+/// * `unsafe_registers` - Registers which should be avoided
 fn gen_pre_op(
     c: &mut FunContext, instructions: &mut Vec<String>,
-    lhs: &Expr, rhs: &Expr
+    lhs: &Expr, rhs: &Expr, unsafe_registers: RegSet,
 ) -> Result<(Loc, Loc, RegSet), CompErr> {
     // Generate instructions for RHS first so we know which registers are safe
     let mut rhs_ins = vec!();
     let (rhs_loc, mut used_registers) = gen_expr(c, &mut rhs_ins, rhs)?;
-    let safe_registers = get_safe_registers(used_registers.clone());
+
+    let safe_registers = get_safe_registers(used_registers.clone())
+        .subtract(&unsafe_registers);
 
     let (lhs_loc, lhs_registers) = gen_expr(c, instructions, lhs)?;
     used_registers = used_registers.union(lhs_registers);
@@ -466,15 +485,15 @@ fn gen_bin_op(
     c: &mut FunContext, instructions: &mut Vec<String>,
     op: &BinOp, lhs: &Expr, rhs: &Expr
 ) -> Result<(Loc, RegSet), CompErr> {
-    let (lhs_loc, rhs_loc, mut used_registers) =
-        gen_pre_op(c, instructions, lhs, rhs)?;
+    let (lhs_loc, rhs_loc, used_registers) = gen_pre_op(
+        c, instructions, lhs, rhs,
+        registers_for_op(op))?;
 
     // Run the command!
     let (op_loc, op_registers) =
         gen_op_command(instructions, op, lhs_loc, rhs_loc);
-    used_registers = used_registers.union(op_registers);
 
-    Ok((op_loc, used_registers))
+    Ok((op_loc, used_registers.union(op_registers)))
 }
 
 fn gen_syscall(
@@ -486,7 +505,7 @@ fn gen_syscall(
             "syscall() must take between 1-7 arguments"));
     }
 
-    let mut used_registers = RegSet::empty();
+    let mut used_registers = RegSet::of(Reg::Rax);
 
     for param in params.iter().rev() {
         let (param_loc, param_used_reg) =
@@ -841,7 +860,8 @@ fn gen_cond_cmp(
     rhs: &Expr,
     end_label: &String
 ) -> Result<(), CompErr> {
-    let (lhs_loc, rhs_loc, _) = gen_pre_op(c, instructions, lhs, rhs)?;
+    let (lhs_loc, rhs_loc, _) = gen_pre_op(
+        c, instructions, lhs, rhs, RegSet::empty())?;
     instructions.push(format!("cmpq {},{}", rhs_loc, lhs_loc));
     instructions.push(format!("{} {}", jump_command, end_label));
     Ok(())

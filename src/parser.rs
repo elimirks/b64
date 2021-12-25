@@ -814,13 +814,21 @@ fn parse_content(
     Ok((root_statements, c.strings))
 }
 
-fn relative_to_canonical_path(base: &PathBuf, imp: &PathBuf) -> PathBuf {
+fn relative_to_canonical_path(
+    base: &PathBuf, imp: &PathBuf
+) -> Result<PathBuf, CompErr> {
     if imp.is_absolute() {
-        imp.clone()
+        Ok(imp.clone())
     } else {
         match base.parent() {
-            Some(parent) => parent.join(imp).canonicalize().unwrap(),
-            None         => imp.clone(),
+            Some(parent) => match parent.join(imp).canonicalize() {
+                Ok(other) => Ok(other),
+                Err(err)  => Err(CompErr {
+                    pos: None,
+                    message: format!("Error importing {:?}: {}", imp, err),
+                }),
+            },
+            None         => Ok(imp.clone()),
         }
     }
 }
@@ -878,7 +886,7 @@ fn unpool_file_path(
     parse_state: &Arc<(Mutex<ParseState>, Condvar)>
 ) -> Option<(usize, PathBuf)> {
     let (mutex, cvar) = parse_state.as_ref();
-    let mut guard = mutex.lock().unwrap();
+    let mut guard = mutex.lock().ok()?;
 
     loop {
         // There is nothing left to do!
@@ -889,7 +897,7 @@ fn unpool_file_path(
             res @ Some(_) => return res,
             None => {},
         }
-        guard = cvar.wait(guard).unwrap();
+        guard = cvar.wait(guard).ok()?;
     }
 }
 
@@ -900,20 +908,26 @@ fn parse_file(
     parse_state: &Arc<(Mutex<ParseState>, Condvar)>
 ) {
     let path_str = path.to_str().unwrap().to_string();
-    let content = std::fs::read_to_string(&path)
-        .expect(format!("Failed reading {}", path_str).as_str());
+    let content = std::fs::read_to_string(&path).unwrap();
 
     let (mutex, cvar) = parse_state.as_ref();
 
     let parsed_content = parse_content(file_id, &content);
-    let mut guard = mutex.lock().unwrap();
+    let mut guard = match mutex.lock() {
+        Ok(guard) => guard,
+        _         => return, // Poison pill!
+    };
 
     match parsed_content {
         Ok((mut statements, strings)) => {
             for import in statements.imports {
                 let imp = import.path;
                 let imp_path = Path::new(&imp).to_path_buf();
-                guard.push_path_to_parse(relative_to_canonical_path(&path, &imp_path));
+
+                match relative_to_canonical_path(&path, &imp_path) {
+                    Ok(path) => guard.push_path_to_parse(path),
+                    Err(err) => guard.result.errors.push(err),
+                };
             }
             guard.result.functions.append(&mut statements.functions);
             guard.result.variables.append(&mut statements.variables);

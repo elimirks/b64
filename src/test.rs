@@ -40,6 +40,13 @@ fn test_extern() {
     )));
 }
 
+#[test]
+fn test_shl() {
+    assert_eq!(0, run(vec!(
+        "test/shl.b".to_string(),
+    )));
+}
+
 #[allow(dead_code)]
 fn run(inputs: Vec<String>) -> i32 {
     let mut hasher = DefaultHasher::new();
