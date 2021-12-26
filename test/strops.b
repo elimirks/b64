@@ -16,6 +16,11 @@ show_strcmp() {
     putstr("*n");
 }
 
+show_strcat() {
+    putstr(strcat("Hello Mars, ", "goodbye Earth*n"));
+}
+
 main() {
     show_strcmp();
+    show_strcat();
 }

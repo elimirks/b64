@@ -35,9 +35,32 @@ charcmp(c1, c2) {
 }
 
 /*
- * Returns a malloc'd new string!
+ * Concatenates the two given strings.
+ * @return a malloc'd new string
  */
 strcat(s1, s2) {
+    auto s1len, s2len, s2lastIndex, newLen, newQuadLen, new, newptr;
+    s1len = strlen(s1);
+    s2len = strlen(s2);
+    /* +1 in case we need it for a null byte.
+     * Since we round up for newQuadLen, this
+     * won't ever needlessly allocate an extra quad.
+     */
+    newLen = s1len + s2len + 1;
+    /* Allocate number of quads we need */
+    newQuadLen = ((newLen + 7) & ~7) >> 3;
+    new = malloc(newQuadLen);
+    memmove(new, s1, ((s1len + 7) & ~7) >> 3);
+
+    s2lastIndex = ((s2len + 7) & ~7) >> 3;
+    newptr = new + s1len;
+    memmove(newptr, s2, s2lastIndex);
+
+    /* Must manually null terminate if s2len is a multiple of 8 */
+    if ((s2len & 255) == 0) {
+       new[newQuadLen - 1] = 0;
+    }
+    return(new);
 }
 
 /**
