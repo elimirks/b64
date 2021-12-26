@@ -2,7 +2,7 @@
 
 (define-generic-mode 'b-mode
   '(("/*" . "*/"))
-  '("return" "auto" "extrn" "eof" "while" "if" "else" "goto" "switch" "break")
+  '("return" "auto" "extrn" "eof" "while" "if" "else" "goto" "switch" "break" "case" "default")
   '(("\\b[0-9]+\\b" . font-lock-constant-face))
   '("\\.b$")
   '() ;; TODO: Highlight string & char literals here

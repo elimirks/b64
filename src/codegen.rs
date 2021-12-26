@@ -1,5 +1,6 @@
 use std::sync::Condvar;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::BufWriter;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -763,15 +764,15 @@ fn gen_expr_deref_ass(
     Ok((Loc::Register(rhs_reg), used_registers))
 }
 
+/// # Arguments
+/// * `dest_reg` - For values > 2^32, this is the reg that will be used.
 fn gen_int(
-    instructions: &mut Vec<String>, signed: i64
+    instructions: &mut Vec<String>, signed: i64, dest_reg: Reg
 ) -> (Loc, RegSet) {
     if signed < i32::MAX as i64 && signed >= i32::MIN as i64 {
         (Loc::Immediate(signed), RegSet::empty())
     } else {
         let unsigned = signed as u64;
-        let dest_reg = Reg::Rax;
-
         let upper = (unsigned & !((1 << 32) - 1)) >> 32;
         let lower = unsigned & ((1 << 32) - 1);
 
@@ -825,7 +826,7 @@ fn gen_expr(
     expr: &Expr
 ) -> Result<(Loc, RegSet), CompErr> {
     match expr {
-        Expr::Int(_, value) => Ok(gen_int(instructions, *value)),
+        Expr::Int(_, value) => Ok(gen_int(instructions, *value, Reg::Rax)),
         Expr::Id(pos, name) => {
             match c.find_in_scope(name) {
                 Some(ScopeEntry::Var(loc)) =>
@@ -977,6 +978,73 @@ fn gen_if_else(
     Ok(())
 }
 
+fn gen_switch(
+    c: &mut FunContext, instructions: &mut Vec<String>,
+    cond: &Expr, body: &Vec<SwInner>
+) -> Result<(), CompErr> {
+    let (expr_loc, _) = gen_expr(c, instructions, cond)?;
+    // cmp requires the dest to be in a register
+    let cond_loc = match expr_loc {
+        loc @ Loc::Register(_) => loc,
+        other => {
+            instructions.push(format!("movq {},%rax", other));
+            Loc::Register(Reg::Rax)
+        },
+    };
+
+    // The register to store case values
+    let case_reg = match cond_loc {
+        Loc::Register(Reg::Rax) => Reg::Rcx,
+        _                       => Reg::Rax,
+    };
+
+    let mut used_case_values = HashSet::new();
+    let mut default_label: Option<String> = None;
+    let mut body_inst = vec!();
+
+    let switch_end_label = c.new_label("SW_END");
+
+    c.break_dest_stack.push(switch_end_label.clone());
+    for inner in body {
+        match inner {
+            SwInner::Default(pos) => {
+                if !default_label.is_none() {
+                    return CompErr::err(
+                        pos,
+                        format!("`default` label is already defined in switch"));
+                }
+                let label_name = c.new_label("SW_DEFAULT");
+                body_inst.push(format!("{}:", label_name));
+                default_label = Some(label_name);
+            },
+            SwInner::Case(pos, value) => {
+                if used_case_values.contains(value) {
+                    return CompErr::err(
+                        pos,
+                        format!("case {} is already defined in switch", value));
+                }
+                used_case_values.insert(value);
+
+                let (case_loc, _) = gen_int(&mut body_inst, *value, case_reg);
+                let label_name = c.new_label("SW_CASE");
+                body_inst.push(format!("{}:", label_name));
+                instructions.push(format!("cmpq {},{}", case_loc, cond_loc));
+                instructions.push(format!("je {}", label_name));
+            },
+            SwInner::Statement(body) => gen_statement(c, &mut body_inst, body)?,
+        }
+    }
+    c.break_dest_stack.pop();
+    // Default jump point
+    instructions.push(format!("jmp {}", match default_label {
+        Some(label_name) => label_name,
+        None             => switch_end_label.clone(),
+    }));
+    instructions.append(&mut body_inst);
+    instructions.push(format!("{}:", switch_end_label));
+    Ok(())
+}
+
 fn gen_auto(
     c: &mut FunContext, instructions: &mut Vec<String>,
     pos: &Pos, vars: &Vec<Var>
@@ -997,13 +1065,13 @@ fn gen_auto(
                     let value = initial[i];
                     let val_dest_loc = Loc::Stack(-size - 1 + i as i64);
 
-                    let (val_loc, _) = gen_int(instructions, value);
+                    let (val_loc, _) = gen_int(instructions, value, Reg::Rax);
                     instructions.push(format!(
                         "movq {},{}", val_loc, val_dest_loc));
                 }
             },
             Var::Single(_, Some(value)) => {
-                let (val_loc, _) = gen_int(instructions, *value);
+                let (val_loc, _) = gen_int(instructions, *value, Reg::Rax);
                 instructions.push(format!("movq {},{}", val_loc, dest_loc));
             },
             Var::Single(_, None) => {},
@@ -1091,6 +1159,7 @@ fn gen_statement(
         Statement::While(cond, body)       => gen_while(c, instructions, cond, body),
         Statement::If(cond, if_body, Some(else_body)) =>
             gen_if_else(c, instructions, cond, if_body, else_body),
+        Statement::Switch(cond, body) => gen_switch(c, instructions, cond, body),
     }
 }
 

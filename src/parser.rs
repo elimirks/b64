@@ -275,6 +275,7 @@ fn parse_statement(c: &mut ParseContext) -> Result<Statement, CompErr> {
         Token::Extern      => parse_statement_extern(c, pos),
         Token::If          => parse_statement_if(c),
         Token::While       => parse_statement_while(c),
+        Token::Switch      => parse_statement_switch(c),
         Token::Semicolon   => Ok(Statement::Null),
         Token::Label(name) => Ok(Statement::Label(pos, name)),
         Token::Goto        => parse_statement_goto(c),
@@ -387,6 +388,42 @@ fn parse_statement_goto(c: &mut ParseContext) -> Result<Statement, CompErr> {
         },
         (pos, _) => CompErr::err(&pos, "Expected ID".to_string()),
     }
+}
+
+// Expect "switch" to have been parsed already
+fn parse_statement_switch(c: &mut ParseContext) -> Result<Statement, CompErr> {
+    parse_tok(c, Token::LParen)?;
+    let cond_expr = parse_expr(c)?;
+    parse_tok(c, Token::RParen)?;
+    // As per the B spec, switch bodies must always be compound statements
+    parse_tok(c, Token::LBrace)?;
+
+    let mut inner_statements = vec!();
+    loop {
+        let inner = match pop_tok(c)? {
+            (pos, Token::Default) => {
+                parse_tok(c, Token::Colon)?;
+                SwInner::Default(pos)
+            },
+            (pos, Token::Case) => {
+                let value = match pop_tok(c)? {
+                    (_, Token::Int(value))  => value,
+                    (_, Token::Char(chars)) => pack_chars(&chars)[0],
+                    (pos, tok) => return CompErr::err(
+                        &pos, format!("Int or char expected, {:?} given.", tok)),
+                };
+                parse_tok(c, Token::Colon)?;
+                SwInner::Case(pos, value)
+            },
+            (_, Token::RBrace) => break,
+            other => {
+                push_tok(c, other);
+                SwInner::Statement(parse_statement(c)?)
+            },
+        };
+        inner_statements.push(inner);
+    }
+    Ok(Statement::Switch(cond_expr, inner_statements))
 }
 
 // Expect "while" to have been parsed already

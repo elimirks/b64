@@ -92,6 +92,16 @@ pub enum Statement {
     Block(Vec<Statement>),
     If(Expr, Box<Statement>, Option<Box<Statement>>),
     While(Expr, Box<Statement>),
+    Switch(Expr, Vec<SwInner>),
+}
+
+/// Statements allowed inside switch statements
+/// Switch needs special rules for "case" and "default"
+#[derive(Debug)]
+pub enum SwInner {
+    Default(Pos),
+    Case(Pos, i64),
+    Statement(Statement),
 }
 
 #[derive(Debug)]

@@ -15,6 +15,8 @@ pub enum Token {
     Import,
     Return,
     Auto,
+    Case,
+    Default,
     Extern,
     Eof,
     While,
@@ -370,15 +372,17 @@ fn get_tok_word(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 
     // Safe to assume it's valid utf8 since we enforce ASCII
     let tok = match slice {
-        "auto"   => Token::Auto,
-        "break"  => Token::Break,
-        "else"   => Token::Else,
-        "extrn"  => Token::Extern,
-        "goto"   => Token::Goto,
-        "if"     => Token::If,
-        "return" => Token::Return,
-        "switch" => Token::Switch,
-        "while"  => Token::While,
+        "auto"    => Token::Auto,
+        "break"   => Token::Break,
+        "case"    => Token::Case,
+        "default" => Token::Default,
+        "else"    => Token::Else,
+        "extrn"   => Token::Extern,
+        "goto"    => Token::Goto,
+        "if"      => Token::If,
+        "return"  => Token::Return,
+        "switch"  => Token::Switch,
+        "while"   => Token::While,
         word => {
             let name: String = word.to_string();
 
