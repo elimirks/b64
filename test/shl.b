@@ -1,3 +1,5 @@
+#import "../assets/best.b";
+
 a() {
     return(2 << (3 * 4));
 }
@@ -7,6 +9,6 @@ b() {
 }
 
 main() {
-    /* To assert they're the same */
-    return(a() - b());
+    assert_eq_int(8192, a());
+    assert_eq_int(8192, b());
 }

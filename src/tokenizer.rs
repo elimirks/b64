@@ -1,7 +1,8 @@
 use crate::parser::ParseContext;
 use crate::ast::{Pos, CompErr};
-use crate::util::lsb_number;
 
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+use crate::util::lsb_number;
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 use std::arch::x86_64::*;
 

@@ -1,20 +1,22 @@
-#import "../assets/stdlib.b";
+#import "../assets/best.b";
 
-show_strcmp() {
-    printf("strcmp:*n");
-    printf("%d*n", strcmp("aaaaaaaaac", "aaaaaaaaab"));
-    printf("%d*n", strcmp("", "eouotheusntaoeusntaehutsnahtoneuah"));
-    printf("%d*n", strcmp("a", "e"));
-    printf("%d*n", strcmp("a", "eouotheusntaoeusntaehutsnahtoneuah"));
-    printf("%d*n", strcmp("z", "e"));
-    printf("%d*n", strcmp("z", "eouotheusntaoeusntaehutsnahtoneuah"));
+test_strcmp() {
+    assert_eq_int(-1, strcmp("aaaaaaaaac", "aaaaaaaaab"));
+    assert_eq_int(1, strcmp("", "eouotheusntaoeusntaehutsnahtoneuah"));
+    assert_eq_int(1, strcmp("a", "e"));
+    assert_eq_int(1, strcmp("a", "eouotheusntaoeusntaehutsnahtoneuah"));
+    assert_eq_int(-1, strcmp("z", "e"));
+    assert_eq_int(1, strcmp("z", "eouotheusntaoeusntaehutsnahtoneuah"));
 }
 
-show_strcat() {
-    putstr(strcat("Hello Mars, ", "goodbye Earth*n"));
+test_strcat() {
+    assert_eq_str(
+        "Hello Mars, goodbye Earth*n",
+        strcat("Hello Mars, ", "goodbye Earth*n")
+    );
 }
 
 main() {
-    show_strcmp();
-    show_strcat();
+    test_strcmp();
+    test_strcat();
 }

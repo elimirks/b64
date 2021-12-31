@@ -1,3 +1,5 @@
+#import "../assets/best.b";
+
 thing() {
     extrn ext;
     return(ext);
@@ -8,8 +10,7 @@ main() {
     ext = 42;
     vec[0] = 3;
     vec[1] = 5;
-    /* Should return 50 */
-    return(thing() + vec[0] + vec[1]);
+    assert_eq_int(50, thing() + vec[0] + vec[1]);
 }
 
 ext;

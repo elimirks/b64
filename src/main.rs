@@ -2,7 +2,6 @@ mod ast;
 mod codegen;
 mod memory;
 mod parser;
-mod test;
 mod tokenizer;
 mod util;
 
