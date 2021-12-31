@@ -1,19 +1,13 @@
 #import "../assets/stdlib.b";
 
 show_strcmp() {
-    putstr("strcmp:*n");
-    putnum(strcmp("aaaaaaaaac", "aaaaaaaaab"));
-    putstr("*n");
-    putnum(strcmp("", "eouotheusntaoeusntaehutsnahtoneuah"));
-    putstr("*n");
-    putnum(strcmp("a", "e"));
-    putstr("*n");
-    putnum(strcmp("a", "eouotheusntaoeusntaehutsnahtoneuah"));
-    putstr("*n");
-    putnum(strcmp("z", "e"));
-    putstr("*n");
-    putnum(strcmp("z", "eouotheusntaoeusntaehutsnahtoneuah"));
-    putstr("*n");
+    printf("strcmp:*n");
+    printf("%d*n", strcmp("aaaaaaaaac", "aaaaaaaaab"));
+    printf("%d*n", strcmp("", "eouotheusntaoeusntaehutsnahtoneuah"));
+    printf("%d*n", strcmp("a", "e"));
+    printf("%d*n", strcmp("a", "eouotheusntaoeusntaehutsnahtoneuah"));
+    printf("%d*n", strcmp("z", "e"));
+    printf("%d*n", strcmp("z", "eouotheusntaoeusntaehutsnahtoneuah"));
 }
 
 show_strcat() {

@@ -159,7 +159,7 @@ fn get_tok_symbol(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
         '?' => Ok((pos, Token::Question)),
         ',' => Ok((pos, Token::Comma)),
         '*' => Ok((pos, Token::Asterisk)),
-        '&' => Ok((pos, Token::Ampersand)),
+        '&' => Ok((pos, Token::Ampersand)), // TODO: Warn or error for &&
         '|' => Ok((pos, Token::Pipe)),
         '^' => Ok((pos, Token::Caret)),
         '~' => Ok((pos, Token::Tilde)),

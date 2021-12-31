@@ -141,6 +141,33 @@ putnum(n) {
     }
 }
 
+/**
+ * Writes the given number to stdout, in octal form.
+ * Outputs UNSIGNED octal integers.
+ */
+putnumoct(n) {
+    /* Max number of digits for unsigned 64 bit octal number */
+    /* 1777777777777777777777 */
+    auto numstack[22], top;
+    top = numstack;
+
+    if (n == 0) {
+        _putcharSingle('0');
+        return;
+    }
+
+    while (n != 0) {
+        *top = n & 7;
+        n =>> 3;
+        top =+ 8;
+    }
+
+    while (top != numstack) {
+        top =- 8;
+        _putcharSingle(*top + '0');
+    }
+}
+
 /*
  * Allocates a new string of the given number represented in decimal
  */
@@ -187,4 +214,82 @@ num2str(n) {
         str[strIndex] =| *stackTop << (charIndex << 3);
     }
     return(str);
+}
+
+exit(code) {
+    syscall(60, code);
+}
+
+panic(message) {
+    putchar('PANIC: ');
+    putstr(message);
+    putchar('*n');
+    exit(1);
+}
+
+/*
+ * Prints the given format string based on the args.
+ * Since B doesn't support vargs, we're capped at 10 format parameters.
+ * Using anything more than 10 will panic the program.
+ * Supported format tokens:
+ * - %d for signed decimal
+ * - %o for unsigned octal 
+ * - %c for wide character
+ * - %s for string
+ * - %% for a percent symbol (useful if you want to print a literal '%d')
+ * - % followed by anything else will print out the character verbatim
+ */
+printf(fmt, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9) {
+    auto fmt_ptr, is_perc 0, arg_num 0, arg;
+    fmt_ptr = fmt;
+
+    /* Iterate over each char, not quad */
+    while ((*fmt_ptr & 0377) != 0) {
+        auto c;
+        c = *fmt_ptr & 0377;
+
+        if (is_perc) {
+            switch (arg_num) {
+            case 0: arg = a0; break;
+            case 1: arg = a1; break;
+            case 2: arg = a2; break;
+            case 3: arg = a3; break;
+            case 4: arg = a4; break;
+            case 5: arg = a5; break;
+            case 6: arg = a6; break;
+            case 7: arg = a7; break;
+            case 8: arg = a8; break;
+            case 9: arg = a9; break;
+            default:
+                panic("Too many %'s in printf!");
+            }
+            is_perc = 0;
+
+            if (c == 'd') {
+                arg_num =+ 1;
+                putnum(arg);
+            } else if (c == 'o') {
+                arg_num =+ 1;
+                putnumoct(arg);
+            } else if (c == 's') {
+                arg_num =+ 1;
+                putstr(arg);
+            } else if (c == 'c') {
+                arg_num =+ 1;
+                putchar(arg);
+            } else if (c == '%') {
+                putchar(c);
+            } else {
+                putchar('%');
+                putchar(c);
+            }
+        } else {
+            if (c == '%' & arg_num < 10) {
+                is_perc = 1;
+            } else {
+                putchar(c);
+            }
+        }
+        fmt_ptr =+ 1;
+    }
 }

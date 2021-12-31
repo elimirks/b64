@@ -562,9 +562,9 @@ fn gen_call(
 
     match c.find_in_scope(name) {
         Some(ScopeEntry::Fun(arg_num)) => {
-            if params.len() != *arg_num {
+            if params.len() > *arg_num {
                 return CompErr::err(pos, format!(
-                    "{} must accept {} arguments", name, arg_num));
+                    "{} accepts at most {} arguments", name, arg_num));
             }
         },
         Some(ScopeEntry::Var(_)) => {

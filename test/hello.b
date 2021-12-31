@@ -1,5 +1,5 @@
 #import "../assets/stdlib.b";
 
 main() {
-    putstr("Hello world!*n");
+    printf("hello %d, %o, %c, %s $%$*n", 31415, 0377, 'a', "world!");
 }
