@@ -1,6 +1,7 @@
 #!/bin/sh
 
 # TODO: Replace this with a B program
+set -e
 
 for f in test/*; do
     cargo -q run --release -- -r $f

@@ -1113,6 +1113,7 @@ fn gen_statement(
         Statement::Break(pos) => {
             match c.break_dest_stack.last() {
                 Some(label) => {
+                    instructions.push(format!("# break"));
                     instructions.push(format!("jmp {}", label));
                     Ok(())
                 },
@@ -1123,6 +1124,7 @@ fn gen_statement(
         Statement::Goto(pos, name) => {
             match c.labels.get(name) {
                 Some(label) => {
+                    instructions.push(format!("# goto {}", label));
                     instructions.push(format!("jmp {}", label));
                     Ok(())
                 },
@@ -1137,10 +1139,14 @@ fn gen_statement(
             Ok(())
         },
         Statement::Return => {
+            instructions.push(format!("# return"));
             gen_return(instructions);
             Ok(())
         },
-        Statement::ReturnExpr(expr) => gen_return_expr(c, instructions, expr),
+        Statement::ReturnExpr(expr) => {
+            instructions.push(format!("# return"));
+            gen_return_expr(c, instructions, expr)
+        },
         Statement::Block(statements) => {
             c.new_scope();
             for statement in statements {
@@ -1149,17 +1155,35 @@ fn gen_statement(
             c.drop_scope();
             Ok(())
         },
-        Statement::Auto(pos, vars)   => gen_auto(c, instructions, pos, vars),
-        Statement::Extern(pos, vars) => gen_extern(c, pos, vars),
+        Statement::Auto(pos, vars)   => {
+            instructions.push(format!("# auto"));
+            gen_auto(c, instructions, pos, vars)
+        },
+        Statement::Extern(pos, vars) => {
+            instructions.push(format!("# extrn"));
+            gen_extern(c, pos, vars)
+        },
         Statement::Expr(expr) => {
+            instructions.push(format!("# Expression statement"));
             gen_expr(c, instructions, expr)?;
             Ok(())
         },
-        Statement::If(cond, if_body, None) => gen_if(c, instructions, cond, if_body),
-        Statement::While(cond, body)       => gen_while(c, instructions, cond, body),
-        Statement::If(cond, if_body, Some(else_body)) =>
-            gen_if_else(c, instructions, cond, if_body, else_body),
-        Statement::Switch(cond, body) => gen_switch(c, instructions, cond, body),
+        Statement::If(cond, if_body, None) => {
+            instructions.push(format!("# if"));
+            gen_if(c, instructions, cond, if_body)
+        },
+        Statement::If(cond, if_body, Some(else_body)) => {
+            instructions.push(format!("# if"));
+            gen_if_else(c, instructions, cond, if_body, else_body)
+        },
+        Statement::While(cond, body) => {
+            instructions.push(format!("# while"));
+            gen_while(c, instructions, cond, body)
+        },
+        Statement::Switch(cond, body) => {
+            instructions.push(format!("# switch"));
+            gen_switch(c, instructions, cond, body)
+        },
     }
 }
 
