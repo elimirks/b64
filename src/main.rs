@@ -35,7 +35,8 @@ fn main() {
         generate(parse_result, &mut stdout);
     } else {
         let output_path = if opts.run {
-            "/tmp/b64.bin".to_string()
+            let pid = std::process::id();
+            format!("/tmp/b64_{}.bin", pid)
         } else {
             match opts.output {
                 Some(output) => output,
