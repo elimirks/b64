@@ -1056,14 +1056,20 @@ fn gen_auto(
 
         match var {
             Var::Vec(_, size, initial) => {
+                let offset = if let Loc::Stack(offset) = dest_loc {
+                    offset
+                } else {
+                    panic!("Auto loc should always be on the stack!");
+                };
+
                 // The first value in the stack for a vector is a data pointer
                 instructions.push(format!(
-                    "leaq {}(%rbp),%rax", - (1 + size) * 8));
+                    "leaq {}(%rbp),%rax", (offset - size) * 8));
                 instructions.push(format!("movq %rax,{}", dest_loc));
 
                 for i in 0..initial.len() {
                     let value = initial[i];
-                    let val_dest_loc = Loc::Stack(-size - 1 + i as i64);
+                    let val_dest_loc = Loc::Stack(offset - size + i as i64);
 
                     let (val_loc, _) = gen_int(instructions, value, Reg::Rax);
                     instructions.push(format!(

@@ -343,8 +343,9 @@ unsafe fn get_inside_quotes(
                     // These aren't ever necessary in code compiled with b64
                     '{'  => '{',
                     '}'  => '}',
-                    other => return CompErr::err(&c.pos(), format!(
-                        "Unknown escape char: {}", other)),
+                    other => return CompErr::err(
+                        &Pos::new(i, c.file_id),
+                        format!("Unknown char/str escape char: {}", other)),
                 }
             },
             chr => {
