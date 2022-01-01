@@ -316,8 +316,14 @@ system(filename, a1, a2, a3, a4, a5, a6, a7, a8, a9) {
     if ((pid = sys_fork()) == 0) {
         /* Child process */
         sys_execve(filename, args, &env);
+        /* Call to `exit` will never happen if execve succeeds */
+        exit(1);
     } else {
-        sys_wait4(pid, 0, 0, 0);
+        /* https://pubs.opengroup.org/onlinepubs/9699919799/functions/waitid.html */
+        auto siginfo[15];
+        syscall(247, 1, pid, siginfo, 4);
+        /* siginfo + 24 is the offset of the LONG status value */
+        return((*(siginfo + 24)) & 0377);
     }
 }
 
@@ -327,8 +333,4 @@ sys_fork() {
 
 sys_execve(filename, argv, envp) {
     syscall(59, filename, argv, envp);
-}
-
-sys_wait4(upid, stat_addr, options, rusage) {
-    return(syscall(61, upid, stat_addr, options, rusage));
 }
