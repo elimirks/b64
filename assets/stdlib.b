@@ -69,15 +69,9 @@ strcat(s1, s2) {
  */
 strlen(s) {
     auto len 0;
-    while (1) {
-        auto clen;
-        clen = charlen(*s);
-        len =+ clen;
-        if (clen < 8) {
-            break;
-        }
-
-        s =+ 8;
+    while ((*s & 0377) != 0) {
+        s =+ 1;
+        len =+ 1;
     }
     return(len);
 }
@@ -86,7 +80,7 @@ strlen(s) {
  * Writes the given string reference to stdout.
  */
 putstr(s) {
-    syscall(1, 1, s, strlen(s));
+    return(syscall(1, 1, s, strlen(s)));
 }
 
 /**
@@ -94,7 +88,7 @@ putstr(s) {
  */
 charlen(c) {
     auto len 0;
-    while (c) {
+    while ((c & 0377) != 0) {
         c =>> 8;
         len =+ 1;
     }
@@ -105,12 +99,12 @@ charlen(c) {
  * Writes each ASCII character in the given wide char to stdout
  */
 putchar(c) {
-    syscall(1, 1, &c, charlen(c));
+    return(syscall(1, 1, &c, charlen(c)));
 }
 
 /* Writes the first ASCII char of the given wide char to stdout */
 _putcharSingle(c) {
-    syscall(1, 1, &c, 1);
+    return(syscall(1, 1, &c, 1));
 }
 
 /**
@@ -321,7 +315,9 @@ system(filename, a1, a2, a3, a4, a5, a6, a7, a8, a9) {
     } else {
         /* https://pubs.opengroup.org/onlinepubs/9699919799/functions/waitid.html */
         auto siginfo[15];
-        syscall(247, 1, pid, siginfo, 4);
+        if (syscall(247, 1, pid, siginfo, 4) != 0) {
+            return(-1);
+        }
         /* siginfo + 24 is the offset of the LONG status value */
         return((*(siginfo + 24)) & 0377);
     }
@@ -332,5 +328,5 @@ sys_fork() {
 }
 
 sys_execve(filename, argv, envp) {
-    syscall(59, filename, argv, envp);
+    return(syscall(59, filename, argv, envp));
 }
