@@ -293,3 +293,42 @@ printf(fmt, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9) {
         fmt_ptr =+ 1;
     }
 }
+
+/* arg0 is implicitly set to filename
+ * IMPORTANT: You MUST null terminate the args if you use less than 9
+ */
+system(filename, a1, a2, a3, a4, a5, a6, a7, a8, a9) {
+    auto env 0;
+    auto args[10];
+    args[0] = filename;
+    args[1] = a1;
+    args[2] = a2;
+    args[3] = a3;
+    args[4] = a4;
+    args[5] = a5;
+    args[6] = a6;
+    args[7] = a7;
+    args[8] = a8;
+    args[9] = a9;
+    args[10] = 0;
+
+    auto pid;
+    if ((pid = sys_fork()) == 0) {
+        /* Child process */
+        sys_execve(filename, args, &env);
+    } else {
+        sys_wait4(pid, 0, 0, 0);
+    }
+}
+
+sys_fork() {
+    return(syscall(57));
+}
+
+sys_execve(filename, argv, envp) {
+    syscall(59, filename, argv, envp);
+}
+
+sys_wait4(upid, stat_addr, options, rusage) {
+    return(syscall(61, upid, stat_addr, options, rusage));
+}
