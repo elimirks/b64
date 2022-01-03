@@ -32,13 +32,16 @@ main() {
 
             /* FIXME: Why doesn't strcmp work here? */
             if ((*name & 0377) - '.') {
-                auto abs_path;
+                auto abs_path, slash_name;
                 /* TODO: Implement sprintf and use it here */
-                abs_path = strcat(test_dir, strcat("/", name));
+                slash_name = strcat("/", name);
+                abs_path = strcat(test_dir, slash_name);
                 printf("Testing %s*n", abs_path);
                 if (system("./target/release/b64", "-r", abs_path, 0) != 0) {
                    panic("Test failed");
                 }
+                free(abs_path);
+                free(slash_name);
             }
             it =+ reclen;
         }

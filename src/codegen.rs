@@ -859,7 +859,8 @@ fn gen_expr(
                     Ok((loc.clone(), RegSet::empty())),
                 Some(ScopeEntry::Fun(_)) =>
                     CompErr::err(pos, format!(
-                        "{} is a function, and can only be called", name)),
+                        "{} is a function, and can only be called or referenced",
+                        name)),
                 None => CompErr::err(pos, format!(
                     "Variable {} not in scope", name)),
             }

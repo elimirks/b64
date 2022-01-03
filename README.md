@@ -4,6 +4,8 @@ It will only run on Linux x86_64 systems.
 
 To compile or run, you'll need to have the GNU assembler (`as`) and GNU linker (`ld`) installed.
 
+The generated assembly isn't great, but it supports everything in the original B.
+
 ## Using b64
 Run `-h` for help:
 ```
@@ -16,6 +18,8 @@ OPTIONS:
     -r             Directly run instead of saving the binary
 ```
 
+### Examples
+See the `examples` or `test` directory! The official [B reference manual](https://www.bell-labs.com/usr/dmr/www/bref.html) and [B tutorial](https://www.bell-labs.com/usr/dmr/www/btut.html) explain all the supported functionality.
 ### Standard Library
 There are some standard library functions defined in `assets`. They aren't bundled with the release for now, so if you want to use them you'll have to download them.
 
@@ -65,6 +69,10 @@ In C, this expression would be true: `2 && 1`. But this would be false: `2 & 1`.
 The `+=`, `-=`, ..., operators in C are written as `=+`, `=-`, ...
 
 This leads to some whitespace dependence to avoid ambiguity. Specifically, `a =*b` is the same as `a =* b`, but is different than `a = *b`. Similarly with `=-`.
+### Function pointers
+Any expression can be called. If it's an expression other than a function name, the expression value will be considered a function pointer.
+
+To create a reference to a function, us the syntax `&fun`.
 ## Compiler notes
 ### UTF-8
 - It will mostly work inside comments (except for UTF-8 sequences with trailing `*/` bytes!).
