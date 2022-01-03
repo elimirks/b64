@@ -650,13 +650,10 @@ fn parse_op(
 }
 
 fn parse_expr_id_unchained(
-    c: &mut ParseContext, fun_id_pos: Pos, id: String
+    c: &mut ParseContext, id: String
 ) -> Result<Expr, CompErr> {
     let (pos, tok) = pop_tok(c)?;
     match tok {
-        Token::LParen => {
-            parse_expr_call(c, fun_id_pos, id)
-        },
         // Handle vector index sugar syntax
         Token::LBracket => {
             let index_expr = parse_expr(c)?;
@@ -688,7 +685,7 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
     let (pos, tok) = pop_tok(c)?;
 
     match tok {
-        Token::Id(id) => parse_expr_id_unchained(c, pos, id),
+        Token::Id(id) => parse_expr_id_unchained(c, id),
         Token::Int(value) => Ok(Expr::Int(pos, value)),
         Token::Char(chars) => Ok(Expr::Int(pos, pack_chars(&chars)[0])),
         Token::Str(value) => {
@@ -733,6 +730,7 @@ fn parse_postfix(c: &mut ParseContext, expr: Expr) -> Result<Expr, CompErr> {
             Ok(Expr::UnaryOperator(
                 pos, UnaryOp::PostIncrement, Box::new(next)))
         },
+        Token::LParen => parse_expr_call(c, expr),
         _ => {
             push_tok(c, (pos, tok));
             Ok(expr)
@@ -742,7 +740,7 @@ fn parse_postfix(c: &mut ParseContext, expr: Expr) -> Result<Expr, CompErr> {
 
 // Assumes the rparen has already been parsed
 fn parse_expr_call(
-    c: &mut ParseContext, fun_id_pos: Pos, name: String
+    c: &mut ParseContext, callee: Expr
 ) -> Result<Expr, CompErr> {
     let mut params = Vec::<Expr>::new();
     // To alternate between comma & arg parsing
@@ -773,7 +771,7 @@ fn parse_expr_call(
         }
     }
 
-    Ok(Expr::Call(fun_id_pos, name, params))
+    Ok(Expr::Call(callee.pos(), Box::new(callee), params))
 }
 
 /**

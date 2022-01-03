@@ -552,29 +552,11 @@ fn gen_syscall(
     Ok((Loc::Register(Reg::Rax), used_registers))
 }
 
-fn gen_call(
+// Returns the first 6 param locations
+fn gen_call_params(
     c: &mut FunContext, instructions: &mut Vec<String>,
-    pos: &Pos, name: &String, params: &Vec<Expr>
-) -> Result<(Loc, RegSet), CompErr> {
-    if name == "syscall" {
-        return gen_syscall(c, instructions, pos, params);
-    }
-
-    match c.find_in_scope(name) {
-        Some(ScopeEntry::Fun(arg_num)) => {
-            if params.len() > *arg_num {
-                return CompErr::err(pos, format!(
-                    "{} accepts at most {} arguments", name, arg_num));
-            }
-        },
-        Some(ScopeEntry::Var(_)) => {
-            return CompErr::err(pos, format!(
-                "{} is not a function", name));
-        },
-        None => return CompErr::err(pos, format!(
-            "{} not in scope", name)),
-    }
-
+    params: &Vec<Expr>
+) -> Result<Vec<Loc>, CompErr> {
     // Evaluate backwards until the 7th var.
     // Since the 7th+ params have to be on the stack anyways
     for i in (6..params.len()).rev() {
@@ -595,6 +577,47 @@ fn gen_call(
         param_locs.push(param_loc);
     }
 
+    Ok(param_locs)
+}
+
+fn gen_call(
+    c: &mut FunContext, instructions: &mut Vec<String>,
+    pos: &Pos, callee_expr: &Expr, params: &Vec<Expr>
+) -> Result<(Loc, RegSet), CompErr> {
+    match callee_expr {
+        Expr::Id(_, name) if name == "syscall" => {
+            return gen_syscall(c, instructions, pos, params);
+        },
+        _ => {}
+    }
+
+    let param_locs = gen_call_params(c, instructions, params)?;
+
+    let callee = match callee_expr {
+        Expr::Id(_, name) => match c.find_in_scope(&name) {
+            Some(ScopeEntry::Fun(arg_num)) => {
+                if params.len() > *arg_num {
+                    return CompErr::err(pos, format!(
+                        "{} accepts at most {} arguments", name, arg_num));
+                }
+                name
+            },
+            Some(ScopeEntry::Var(loc)) => {
+                instructions.push(format!("movq {},%rax", loc));
+                "*%rax"
+            },
+            None => return CompErr::err(pos, format!(
+                "{} not in scope", name)),
+        },
+        callee_expr => {
+            let (callee_loc, _) = gen_expr(c, instructions, callee_expr)?;
+            if callee_loc != Loc::Register(Reg::Rax) {
+                instructions.push(format!("movq {},%rax", callee_loc));
+            }
+            "*%rax"
+        },
+    };
+
     for i in (0..std::cmp::min(6, params.len())).rev() {
         let reg = Reg::for_arg_num(i);
         let param_loc = &param_locs[i];
@@ -606,7 +629,7 @@ fn gen_call(
         }
     }
 
-    instructions.push(format!("call {}", name));
+    instructions.push(format!("call {}", callee));
 
     if params.len() > 6 {
         let stack_arg_count = params.len() - 6;
@@ -630,8 +653,11 @@ fn gen_reference(
         },
         Some(ScopeEntry::Var(other)) => CompErr::err(pos, format!(
             "Variable cannot be at {:?}!", other)),
-        Some(ScopeEntry::Fun(_)) => CompErr::err(pos, format!(
-            "Cannot reference a function (yet) {}", name)),
+        Some(ScopeEntry::Fun(_)) => {
+            let dest_reg = Reg::Rax;
+            instructions.push(format!("movq ${},%rax", name));
+            Ok((Loc::Register(dest_reg), RegSet::of(dest_reg)))
+        },
         None => CompErr::err(pos, format!(
             "{} not in scope", name)),
     }
@@ -847,7 +873,7 @@ fn gen_expr(
         Expr::DerefAssignment(_, lhs, rhs) => gen_expr_deref_ass(c, instructions, lhs, rhs),
         Expr::UnaryOperator(_, op, expr)   => gen_unary_op(c, instructions, op, expr),
         Expr::BinOperator(_, op, lhs, rhs) => gen_bin_op(c, instructions, op, lhs, rhs),
-        Expr::Call(pos, name, params)      => gen_call(c, instructions, pos, name, params),
+        Expr::Call(pos, callee, params)    => gen_call(c, instructions, pos, callee, params),
         Expr::Reference(pos, name)         => gen_reference(c, instructions, pos, name),
         Expr::Dereference(_, expr)         => gen_dereference(c, instructions, expr),
         Expr::Cond(_, cond, true_expr, false_expr) =>

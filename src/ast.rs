@@ -127,7 +127,7 @@ pub enum Expr {
     // The actual string raw data is stored separately, so we can
     // easily allocate it in the data segment
     Str(Pos, (usize, usize)),
-    Call(Pos, String, Vec<Expr>),
+    Call(Pos, Box<Expr>, Vec<Expr>),
     Int(Pos, i64),
     Assignment(Pos, String, Box<Expr>),
     DerefAssignment(Pos, Box<Expr>, Box<Expr>),
