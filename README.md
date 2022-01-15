@@ -10,12 +10,13 @@ The generated assembly isn't great, but it supports everything in the original B
 Run `-h` for help:
 ```
 USAGE:
-    b64 [OPTIONS] [INPUTS]
+    ./target/release/b64 [OPTIONS] [INPUTS]
 OPTIONS:
     -h, --help     Print this message
     -s             Compile to ASM, not into a binary
     -o <OUTPUT>    Write the output to the given path
     -r             Directly run instead of saving the binary
+    --             Any args after '--' will pass through
 ```
 
 ### Examples
@@ -33,6 +34,25 @@ See [this article](https://blog.rchapman.org/posts/Linux_System_Call_Table_for_x
 In B, the EOT character was used for character & string termination. To make interoperability with other languages easier, I made them null terminated instead.
 ### Import keyword
 To make life a bit easier, I also added an `#import` keyword which will compile the B program at the given path. Importing the same file twice will have no effect.
+### CLI args
+`argc` and `argv` are passed into the `main` function:
+
+```
+main(argc, argv) {
+    ...
+}
+```
+
+To pass args when using the `-r` flag, use `--`:
+
+```
+$ b64 -r examples/args.b -- hello world
+argc:    3
+argv:    140723691158248
+argv[0]: /tmp/b64_61992.bin
+argv[1]: hello
+argv[2]: world
+```
 ## Important differences from C
 ### Vector sizing
 When creating a new vector (called "array" in C), the number provided is the _max index_, not the size.
