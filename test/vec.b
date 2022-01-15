@@ -1,6 +1,7 @@
 #import "../assets/best.b";
 
 test_multi_auto_vec() {
+    printf("Testing a multiple vecs on the stack*n");
     auto as[4];
     auto bs[4];
 
@@ -39,6 +40,7 @@ test_multi_auto_vec() {
 }
 
 test_mono_auto_vec() {
+    printf("Testing a single vec on the stack*n");
     auto as[4];
 
     /* To check they don't get overridden */

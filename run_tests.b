@@ -30,13 +30,15 @@ main() {
             reclen = *(it + 16) & 0177777;
             name = it + 18;
 
-            /* FIXME: Why doesn't strcmp work here? */
-            if ((*name & 0377) - '.') {
+            if (strcmp(name, ".") != 0 & strcmp(name, "..") != 0) {
                 auto abs_path, slash_name;
                 /* TODO: Implement sprintf and use it here */
                 slash_name = strcat("/", name);
                 abs_path = strcat(test_dir, slash_name);
-                printf("Testing %s*n", abs_path);
+                print_divider(8 + strlen(abs_path));
+                printf("Running %s*n", abs_path);
+                print_divider(8 + strlen(abs_path));
+
                 if (system("./target/release/b64", "-r", abs_path, 0) != 0) {
                    panic("Test failed");
                 }
@@ -46,4 +48,11 @@ main() {
             it =+ reclen;
         }
     }
+}
+
+print_divider(len) {
+    while (len-- > 0) {
+        putchar('=');
+    }
+    putchar('*n');
 }

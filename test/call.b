@@ -1,12 +1,14 @@
 #import "../assets/best.b";
 
 main() {
+    printf("Testing passing many args*n");
     foo(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
 
     auto f_ptr;
     f_ptr = &bar;
     assert_eq_int(42, f_ptr());
 
+    printf("Testing function pointers*n");
     auto f_ptrs[1];
     f_ptrs[0] = &bar;
     f_ptrs[1] = &baz;

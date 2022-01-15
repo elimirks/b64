@@ -4,28 +4,44 @@
  * Compares 2 strings. Return negative if "s1 < s2"
  */
 strcmp(s1, s2) {
-    auto i 0, delta;
+    auto i 0, delta, c1, c2;
 
-    /* Widechar ops are like SIMD here lol */
     while (1) {
-        /* If one of the strings ends here, handle differently */
-        if ((s1[i] & (0377 << 56)) == 0) break;
-        if ((s2[i] & (0377 << 56)) == 0) break;
-        delta = s2[i] - s1[i];
+        c1 = *s1 & 255;
+        c2 = *s2 & 255;
+
+        if (c1 == 0) {
+            return(c2 != 0);
+        }
+        if (c2 == 0) {
+            return(-(c1 != 0));
+        }
+
+        delta = c2 - c1;
         if (delta > 0) return(1);
         if (delta < 0) return(-1);
-        i =+ 1;
+        s1 =+ 1;
+        s2 =+ 1;
     }
-    return(charcmp(s1[i], s2[i]));
 }
 
 /*
  * Compares 2 chars. Return negative if "c1 < c2"
  */
 charcmp(c1, c2) {
-    auto i 0, delta;
+    auto i 0, delta, c1p, c2p;
     while (i < 64) {
-        delta = (c2 >> i) - (c1 >> i);
+        c1p = (c1 >> i) & 255;
+        c2p = (c2 >> i) & 255;
+
+        if (c1p == 0) {
+            return(c2p != 0);
+        }
+        if (c2p == 0) {
+            return(-(c1p != 0));
+        }
+
+        delta = c2p - c1p;
         if (delta > 0) return(1);
         if (delta < 0) return(-1);
         i =+ 8;
@@ -103,7 +119,7 @@ putchar(c) {
 }
 
 /* Writes the first ASCII char of the given wide char to stdout */
-_putcharSingle(c) {
+_putchar_single(c) {
     return(syscall(1, 1, &c, 1));
 }
 
@@ -116,10 +132,10 @@ putnum(n) {
     top = numstack;
 
     if (n < 0) {
-        _putcharSingle('-');
+        _putchar_single('-');
         n = -n;
     } else if (n == 0) {
-        _putcharSingle('0');
+        _putchar_single('0');
         return;
     }
 
@@ -131,7 +147,7 @@ putnum(n) {
 
     while (top != numstack) {
         top =- 8;
-        _putcharSingle(*top + '0');
+        _putchar_single(*top + '0');
     }
 }
 
@@ -146,7 +162,7 @@ putnumoct(n) {
     top = numstack;
 
     if (n == 0) {
-        _putcharSingle('0');
+        _putchar_single('0');
         return;
     }
 
@@ -158,7 +174,7 @@ putnumoct(n) {
 
     while (top != numstack) {
         top =- 8;
-        _putcharSingle(*top + '0');
+        _putchar_single(*top + '0');
     }
 }
 

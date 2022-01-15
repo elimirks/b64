@@ -52,7 +52,7 @@ fib_rec_switch(n) {
 }
 
 assert_fib_eq(expected, fib_index) {
-    printf("Checking if fib(%d) = %d*n", fib_index, expected);
+    printf("Checking if fib(%d) = %d...*n", fib_index, expected);
     assert_eq_int(expected, fib_rec_switch(fib_index));
     assert_eq_int(expected, fib_rec_condexpr(fib_index));
     assert_eq_int(expected, fib_loop(fib_index));
