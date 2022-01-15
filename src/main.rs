@@ -20,6 +20,7 @@ struct Opts {
     run: bool,
     output: Option<String>,
     inputs: Vec<String>,
+    args: Vec<String>,
 }
 
 // jemalloc performs a lot better in multithreaded applications
@@ -48,6 +49,7 @@ fn main() {
 
         if opts.run {
             let prog_status = Command::new(&output_path)
+                .args(opts.args)
                 .status()
                 .expect("Failed running program");
 
@@ -120,11 +122,19 @@ fn parse_opts() -> Opts {
         run: false,
         output: None,
         inputs: vec!(),
+        args: vec!(),
     };
 
     let mut i = 1;
+    let mut pass_through = false;
     while i < args.len() {
         let arg: &String = &args[i];
+
+        if pass_through {
+            opts.args.push(arg.to_string());
+            i += 1;
+            continue;
+        }
 
         match arg.as_ref() {
             "-h" | "--help" => {
@@ -145,7 +155,10 @@ fn parse_opts() -> Opts {
                 i += 1;
                 opts.output = Some(args[i].clone());
             },
-            input => opts.inputs.push(input.to_string()),
+            "--" => pass_through = true,
+            input => {
+                opts.inputs.push(input.to_string())
+            },
         }
 
         i += 1;
@@ -164,6 +177,7 @@ fn print_usage(name: &String) {
     println!("    -s             Compile to ASM, not into a binary");
     println!("    -o <OUTPUT>    Write the output to the given path");
     println!("    -r             Directly run instead of saving the binary");
+    println!("    --             Any args after '--' will pass through");
 }
 
 fn parse_or_die(inputs: &Vec<String>) -> ParseResult {

@@ -1,5 +1,7 @@
 #import "../assets/stdlib.b";
 
+/* Run with ./target/release/b64 -r examples/args.b -- hello world */
+/* Or if you compile this instead of running, you can pass the args normally */
 main(argc, argv) {
     printf("argc:    %d*n", argc);
     printf("argv:    %d*n", argv);
