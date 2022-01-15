@@ -1347,6 +1347,8 @@ fn generate_start(
         }
     }
 
+    writeln!(w, "    movq (%rsp),%rdi")?;  // Pass argc as first `main` arg
+    writeln!(w, "    leaq 8(%rsp),%rsi")?; // Pass argv as second `main` arg
     writeln!(w, "    call main")?;
     writeln!(w, "    movq %rax,%rdi")?;
     writeln!(w, "    movq $60,%rax")?;
