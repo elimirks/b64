@@ -33,8 +33,33 @@ main() {
             if (strcmp(name, ".") != 0 & strcmp(name, "..") != 0) {
                 auto abs_path, slash_name;
                 /* TODO: Implement sprintf and use it here */
+
+                /* FIXME: Why does this only break in Github actions? */
+                printf("name: %s, %d*n", name, strlen(name));
+
+                auto start,end;
+                start = name;
+                end = name + 24;
+
+                while (start != end) {
+                    printf("%d*n", *start & 255);
+                    start =+ 1;
+                }
+
                 slash_name = strcat("/", name);
+                printf("slash_name: %s, %d*n", slash_name, strlen(slash_name));
+
+                start = slash_name;
+                end = slash_name + 24;
+
+                while (start != end) {
+                    printf("%d*n", *start & 255);
+                    start =+ 1;
+                }
+
                 abs_path = strcat(test_dir, slash_name);
+                printf("abs_path: %s, %d*n", abs_path, strlen(abs_path));
+
                 print_divider(8 + strlen(abs_path));
                 printf("Running %s*n", abs_path);
                 print_divider(8 + strlen(abs_path));

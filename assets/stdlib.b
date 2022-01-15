@@ -73,9 +73,10 @@ strcat(s1, s2) {
     memmove(newptr, s2, s2lastIndex);
 
     /* Must manually null terminate if s2len is a multiple of 8 */
-    if ((s2len & 255) == 0) {
-       new[newQuadLen - 1] = 0;
-    }
+    /* if ((s2len & 255) == 0) { */
+        newptr = new + s1len + s2len;
+        *newptr = 0;
+    /* } */
     return(new);
 }
 

@@ -41,11 +41,17 @@ test_strcat() {
         strcat("Hello Mars, ", "goodbye Earth*n")
     );
 
-    auto v[10] '12345678', '123456*07';
+    auto v1[1] '12345678', '123456*07';
 
     assert_eq_str(
         "thing 12345678123456",
-        strcat("thing ", v)
+        strcat("thing ", v1)
+    );
+
+    auto v2[1] 'strops.b', '*0*0*0*01234';
+    assert_eq_str(
+        "/strops.b",
+        strcat("/", v2)
     );
 }
 
