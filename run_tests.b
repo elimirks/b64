@@ -35,6 +35,7 @@ main() {
                 /* TODO: Implement sprintf and use it here */
                 slash_name = strcat("/", name);
                 abs_path = strcat(test_dir, slash_name);
+
                 print_divider(8 + strlen(abs_path));
                 printf("Running %s*n", abs_path);
                 print_divider(8 + strlen(abs_path));

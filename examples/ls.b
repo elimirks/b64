@@ -4,9 +4,13 @@
  * Lists the given directory
  * @see https://man7.org/linux/man-pages/man2/getdents.2.html for reference
  */
-main() {
+main(argc, argv) {
     auto to_list;
-    to_list = ".";
+    if (argc == 1) {
+        to_list = ".";
+    } else {
+        to_list = argv[1];
+    }
 
     auto fd;
     fd = syscall(2, to_list, 0, 0);
@@ -23,7 +27,7 @@ main() {
         if (nread == 0) {
             break;
         } else if (nread < 0) {
-            panic("Failed listing direcotry contents.");
+            panic("Failed listing directory contents.");
         }
 
         auto it;
