@@ -203,7 +203,7 @@ fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
     }
 }
 
-// Expects the @import token to have been parsed
+// Expects the #import token to have been parsed
 fn parse_import(
     c: &mut ParseContext
 ) -> Result<RSImport, CompErr> {
@@ -221,10 +221,51 @@ fn parse_import(
     }
 }
 
-// Parses everything after the name of a function
-fn parse_fun(
-    c: &mut ParseContext, pos: Pos, name: String
-) -> Result<RSFunction, CompErr> {
+// Expects the #define token to have been parsed
+fn parse_define(
+    c: &mut ParseContext
+) -> Result<RSDefine, CompErr> {
+    let pos = c.pos();
+    let name = match pop_tok(c)? {
+        (_, Token::Id(id)) => id,
+        (pos, tok) => return CompErr::err(&pos, format!(
+            "ID expected. {:?} given", tok)),
+    };
+
+    // Handles cases with ambiguous parens
+    let next1 = pop_tok(c)?;
+    let next2 = pop_tok(c)?;
+    let should_parse_args = if next1.1 == Token::LParen {
+        if let (_, Token::Id(_)) = next2 {
+            true
+        } else {
+            next2.1 == Token::RParen
+        }
+    } else {
+        false
+    };
+    push_tok(c, next2);
+    push_tok(c, next1);
+
+    let args = if should_parse_args {
+        parse_args(c)?
+    } else {
+        vec!()
+    };
+    let body = parse_expr(c)?;
+    parse_tok(c, Token::Semicolon)?;
+
+    Ok(RSDefine {
+        pos,
+        name,
+        args,
+        body,
+    })
+}
+
+fn parse_args(
+    c: &mut ParseContext
+) -> Result<Vec<String>, CompErr> {
     parse_tok(c, Token::LParen)?;
 
     let mut args = Vec::<String>::new();
@@ -256,10 +297,18 @@ fn parse_fun(
                     &pos, format!("Unexpected token: {:?}", other)),
         }
     }
+
+    Ok(args)
+}
+
+// Parses everything after the name of a function
+fn parse_fun(
+    c: &mut ParseContext, pos: Pos, name: String
+) -> Result<RSFunction, CompErr> {
     Ok(RSFunction {
-        pos: pos,
-        name: name,
-        args: args,
+        pos,
+        name,
+        args: parse_args(c)?,
         body: parse_statement(c)?,
     })
 }
@@ -862,6 +911,8 @@ fn parse_content(
             },
             (_, Token::Import) =>
                 root_statements.imports.push(parse_import(&mut c)?),
+            (_, Token::Define) =>
+                root_statements.defines.push(parse_define(&mut c)?),
             (_, Token::Eof) => break,
             (pos, tok) => return CompErr::err(&pos, format!(
                 "Expected id. {:?} found", tok)),

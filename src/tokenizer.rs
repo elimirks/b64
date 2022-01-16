@@ -14,6 +14,7 @@ pub enum Token {
     Char(Vec<char>),
     Int(i64),
     Import,
+    Define,
     Return,
     Auto,
     Case,
@@ -183,6 +184,10 @@ fn get_tok_meta(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
         "import" => {
             c.offset += 1 + next_word.len();
             Ok((c.pos(), Token::Import))
+        },
+        "define" => {
+            c.offset += 1 + next_word.len();
+            Ok((c.pos(), Token::Define))
         },
         other => {
             CompErr::err(&pos, format!("Invalid token: #{}", other))

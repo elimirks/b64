@@ -48,6 +48,7 @@ pub struct RootStatements {
     pub functions: Vec<RSFunction>,
     pub variables: Vec<RSVariable>,
     pub imports: Vec<RSImport>,
+    pub defines: Vec<RSDefine>,
 }
 
 impl RootStatements {
@@ -56,6 +57,7 @@ impl RootStatements {
             functions: vec!(),
             variables: vec!(),
             imports: vec!(),
+            defines: vec!(),
         }
     }
 }
@@ -75,6 +77,13 @@ pub struct RSVariable {
 pub struct RSImport {
     pub pos: Pos,
     pub path: String,
+}
+
+pub struct RSDefine {
+    pub pos: Pos,
+    pub name: String,
+    pub args: Vec<String>,
+    pub body: Expr,
 }
 
 #[derive(Debug)]
