@@ -33,7 +33,31 @@ See [this article](https://blog.rchapman.org/posts/Linux_System_Call_Table_for_x
 ### String terminator
 In B, the EOT character was used for character & string termination. To make interoperability with other languages easier, I made them null terminated instead.
 ### Import keyword
-To make life a bit easier, I also added an `#import` keyword which will compile the B program at the given path. Importing the same file twice will have no effect.
+To make life a bit easier, I also added an `#import` keyword which will compile the B program at the given path. Importing the same file twice will have no effect. Unlike C, it must end with a semicolon:
+
+```
+#import "assets/stdlib.b";
+```
+### Define keyword
+`#define` is supported for variable-like and function-like macros:
+
+```
+#import "../assets/best.b";
+
+#define THE_ANSWER 42;
+#define LUCKY (13);
+#define SEMIPRIME() 35;
+#define BINCEIL(n, m) (n + m) & ~m;
+
+main() {
+    assert_eq_int(42, THE_ANSWER);
+    assert_eq_int(13, LUCKY());
+    assert_eq_int(35, SEMIPRIME);
+    assert_eq_int(8, BINCEIL(3, 7));
+}
+```
+
+Unlike C, the body of the `#define` must be a valid expression, and terminated with a semicolon `;`. So, you DON'T need to escape newlines with `\`.
 ### CLI args
 `argc` and `argv` are passed into the `main` function:
 

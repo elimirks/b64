@@ -19,7 +19,7 @@ struct CodeGenPool {
     errors: Vec<CompErr>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ScopeEntry {
     // Contains the number of args
     Fun(usize),
@@ -45,7 +45,7 @@ struct FunContext<'a> {
     // So we never run out of unique labels
     func_id: usize,
     label_counter: usize,
-    // Stack of end labels where to tell break where to jump to
+    // Stack of end labels to tell break where to jump to
     break_dest_stack: Vec<String>,
 }
 
@@ -79,7 +79,7 @@ impl FunContext<'_> {
         Ok(())
     }
 
-    fn find_in_scope(&self, name: &String) -> Option<&ScopeEntry> {
+    fn find_in_scope(&self, name: &str) -> Option<&ScopeEntry> {
         if let Some(entry) = self.fun_scope.get(name) {
             return Some(entry);
         }
@@ -582,6 +582,82 @@ fn gen_call_params(
     Ok(param_locs)
 }
 
+/// Substitutes the given IDs in the AST to their respective values.
+/// Used for macro expansion
+fn substitute_id(
+    body: &Expr,
+    substitutions: &HashMap<String, Expr>,
+) -> Result<Expr, CompErr> {
+    Ok(match body {
+        expr @ Expr::Str(_, _)       => expr.clone(),
+        expr @ Expr::Int(_, _)       => expr.clone(),
+        Expr::Id(pos, name) => match substitutions.get(name) {
+            Some(value) => value.clone(),
+            None        => Expr::Id(pos.clone(), name.clone()),
+        },
+        Expr::Reference(pos, name) => match substitutions.get(name) {
+            Some(_) => return CompErr::err(pos, format!(
+                "Cannot reference a macro arg")),
+            None    => Expr::Reference(pos.clone(), name.clone()),
+        },
+        Expr::Call(pos, callee, params) => {
+            let sub_callee = substitute_id(callee, substitutions)?;
+            let mut sub_params = vec!();
+            for param in params {
+                sub_params.push(substitute_id(param, substitutions)?);
+            }
+            Expr::Call(pos.clone(), Box::new(sub_callee), sub_params)
+        },
+        Expr::Assignment(pos, lhs, rhs) => {
+            let sub_rhs = substitute_id(rhs, substitutions)?;
+            Expr::Assignment(pos.clone(), lhs.clone(), Box::new(sub_rhs))
+        },
+        Expr::DerefAssignment(pos, lhs, rhs) => {
+            let sub_lhs = substitute_id(lhs, substitutions)?;
+            let sub_rhs = substitute_id(rhs, substitutions)?;
+            Expr::DerefAssignment(pos.clone(), Box::new(sub_lhs), Box::new(sub_rhs))
+        },
+        Expr::UnaryOperator(pos, op, expr) => {
+            let sub_expr = substitute_id(expr, substitutions)?;
+            Expr::UnaryOperator(pos.clone(), op.clone(), Box::new(sub_expr))
+        },
+        Expr::BinOperator(pos, op, lhs, rhs) => {
+            let sub_lhs = substitute_id(lhs, substitutions)?;
+            let sub_rhs = substitute_id(rhs, substitutions)?;
+            Expr::BinOperator(pos.clone(), op.clone(),
+                              Box::new(sub_lhs), Box::new(sub_rhs))
+        },
+        Expr::Cond(pos, cond, truthy, falsey) => {
+            let sub_cond   = substitute_id(cond, substitutions)?;
+            let sub_truthy = substitute_id(truthy, substitutions)?;
+            let sub_falsey = substitute_id(falsey, substitutions)?;
+            Expr::Cond(pos.clone(), Box::new(sub_cond),
+                       Box::new(sub_truthy), Box::new(sub_falsey))
+        },
+        Expr::Dereference(pos, expr) => {
+            let sub_expr = substitute_id(expr, substitutions)?;
+            Expr::Dereference(pos.clone(), Box::new(sub_expr))
+        },
+    })
+}
+
+fn gen_call_macro(
+    c: &mut FunContext, instructions: &mut Vec<String>,
+    pos: &Pos, body: Expr, args: Vec<String>, params: &Vec<Expr>
+) -> Result<(Loc, RegSet), CompErr> {
+    if args.len() != params.len() {
+        return CompErr::err(pos, format!(
+            "This macro must accept {} arguments", args.len()));
+    }
+
+    let mut substitutions = HashMap::new();
+    for i in 0..args.len() {
+        substitutions.insert(args[i].clone(), params[i].clone());
+    }
+    let sub_body = substitute_id(&body, &substitutions)?;
+    gen_expr(c, instructions, &sub_body)
+}
+
 fn gen_call(
     c: &mut FunContext, instructions: &mut Vec<String>,
     pos: &Pos, callee_expr: &Expr, params: &Vec<Expr>
@@ -608,8 +684,12 @@ fn gen_call(
                 instructions.push(format!("movq {},%rax", loc));
                 "*%rax"
             },
-            Some(ScopeEntry::Define(_, _)) =>
-                todo!("Calling a #defined value isn't supported yet"),
+            Some(ScopeEntry::Define(args, body)) => {
+                let ac = args.clone();
+                let bc = body.clone();
+                let pc = pos.clone();
+                return gen_call_macro(c, instructions, &pc, bc, ac, params);
+            },
             None => return CompErr::err(pos, format!(
                 "{} not in scope", name)),
         },
@@ -871,9 +951,6 @@ fn gen_expr(
                         name)),
                 Some(ScopeEntry::Define(args, body)) => {
                     if args.is_empty() {
-                        // FIXME: Kinda hate this
-                        // Have to appease the borrow checker...
-                        // not sure if there is a bettery way
                         let b = body.clone();
                         gen_expr(c, instructions, &b)
                     } else {

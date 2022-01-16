@@ -7,7 +7,7 @@
 
 main() {
     assert_eq_int(42, THE_ANSWER);
-    assert_eq_int(13, LUCKY);
+    assert_eq_int(13, LUCKY());
     assert_eq_int(35, SEMIPRIME);
-    /* assert_eq_int(8, BINCEIL(3, 7)); */
+    assert_eq_int(8, BINCEIL(3, 7));
 }
