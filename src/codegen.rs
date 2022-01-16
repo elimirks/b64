@@ -24,6 +24,8 @@ enum ScopeEntry {
     // Contains the number of args
     Fun(usize),
     Var(Loc),
+    // First parameter are the macro args
+    Define(Vec<String>, Expr),
 }
 
 struct FunContext<'a> {
@@ -606,6 +608,8 @@ fn gen_call(
                 instructions.push(format!("movq {},%rax", loc));
                 "*%rax"
             },
+            Some(ScopeEntry::Define(_, _)) =>
+                todo!("Calling a #defined value isn't supported yet"),
             None => return CompErr::err(pos, format!(
                 "{} not in scope", name)),
         },
@@ -658,6 +662,8 @@ fn gen_reference(
             instructions.push(format!("movq ${},%rax", name));
             Ok((Loc::Register(dest_reg), RegSet::of(dest_reg)))
         },
+        Some(ScopeEntry::Define(_, _)) => CompErr::err(pos, format!(
+            "#define value cannot be referenced")),
         None => CompErr::err(pos, format!(
             "{} not in scope", name)),
     }
@@ -728,6 +734,8 @@ fn gen_expr_ass(
         },
         Some(ScopeEntry::Fun(_)) => 
             CompErr::err(pos, format!("Cannot reassign a function")),
+        Some(ScopeEntry::Define(_, _)) =>
+            CompErr::err(pos, format!("Cannot reassign a #define value")),
         None =>
             CompErr::err(pos, format!("Variable {} not in scope", lhs_name)),
     }
@@ -861,6 +869,18 @@ fn gen_expr(
                     CompErr::err(pos, format!(
                         "{} is a function, and can only be called or referenced",
                         name)),
+                Some(ScopeEntry::Define(args, body)) => {
+                    if args.is_empty() {
+                        // FIXME: Kinda hate this
+                        // Have to appease the borrow checker...
+                        // not sure if there is a bettery way
+                        let b = body.clone();
+                        gen_expr(c, instructions, &b)
+                    } else {
+                        CompErr::err(pos, format!(
+                            "This macro must take {} args", args.len()))
+                    }
+                },
                 None => CompErr::err(pos, format!(
                     "Variable {} not in scope", name)),
             }
@@ -1257,6 +1277,7 @@ fn gen_fun(
 fn root_prepass<'a>(
     functions: &Vec<RSFunction>,
     variables: &'a Vec<RSVariable>,
+    defines: Vec<RSDefine>,
 ) -> Result<(HashMap<String, ScopeEntry>, Vec<&'a Var>), CompErr> {
     let mut scope = HashMap::new();
     let mut root_vars = Vec::<&Var>::new();
@@ -1282,6 +1303,16 @@ fn root_prepass<'a>(
                 "{} already in root scope", name));
         }
         scope.insert(name.clone(), ScopeEntry::Fun(function.args.len()));
+    }
+
+    for define in defines {
+        let name = &define.name;
+        if scope.contains_key(name) {
+            return CompErr::err(&define.pos, format!(
+                "{} already in root scope", name));
+        }
+
+        scope.insert(name.clone(), ScopeEntry::Define(define.args, define.body));
     }
 
     Ok((scope, root_vars))
@@ -1382,13 +1413,16 @@ fn gen(
     strings: Vec<(usize, Vec<Vec<char>>)>,
     functions: Vec<RSFunction>,
     variables: Vec<RSVariable>,
+    defines: Vec<RSDefine>,
     writer: &mut dyn Write
 ) -> Result<(), CompErr> {
     let mut w = BufWriter::new(writer);
 
     let (global_scope, root_vars) = root_prepass(
         &functions,
-        &variables)?;
+        &variables,
+        defines
+    )?;
 
     CompErr::from_io_res(generate_data_segment(&root_vars, &mut w))?;
     CompErr::from_io_res(generate_strings(&strings, &mut w))?;
@@ -1525,6 +1559,7 @@ pub fn generate(parse_result: ParseResult, writer: &mut dyn Write) {
         parse_result.strings,
         parse_result.functions,
         parse_result.variables,
+        parse_result.defines,
         writer
     ) {
         Ok(_) => {},

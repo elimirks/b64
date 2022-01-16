@@ -17,6 +17,7 @@ pub struct ParseResult {
     pub strings: Vec<(usize, Vec<Vec<char>>)>,
     pub functions: Vec<RSFunction>,
     pub variables: Vec<RSVariable>,
+    pub defines: Vec<RSDefine>,
     pub errors: Vec<CompErr>,
 }
 
@@ -27,6 +28,7 @@ impl ParseResult {
             strings: vec!(),
             functions: vec!(),
             variables: vec!(),
+            defines: vec!(),
             errors: vec!(),
         }
     }
@@ -885,7 +887,7 @@ fn parse_content(
     let mut c = ParseContext {
         content: content.as_bytes(),
         offset: 0,
-        file_id: file_id,
+        file_id,
         strings: vec!(),
         tok_stack: vec!(),
     };
@@ -1038,6 +1040,7 @@ fn parse_file(
             }
             guard.result.functions.append(&mut statements.functions);
             guard.result.variables.append(&mut statements.variables);
+            guard.result.defines.append(&mut statements.defines);
             guard.result.file_paths.push((path_str, path));
             guard.result.strings.push((file_id, strings));
         },
