@@ -21,6 +21,11 @@ OPTIONS:
 
 ### Examples
 See the `examples` or `test` directory! The official [B reference manual](https://www.bell-labs.com/usr/dmr/www/bref.html) and [B tutorial](https://www.bell-labs.com/usr/dmr/www/btut.html) explain all the supported functionality.
+
+Use this commands to run compiler tests:
+```
+cargo run -- -r run_tests.b
+```
 ### Standard Library
 There are some standard library functions defined in `assets`. They aren't bundled with the release for now, so if you want to use them you'll have to download them.
 

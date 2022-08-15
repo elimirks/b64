@@ -1,7 +1,7 @@
 use std::fmt;
 
 #[allow(dead_code)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum Reg {
     Rax = 0b0000000000000001,
     Rbx = 0b0000000000000010,
@@ -11,8 +11,8 @@ pub enum Reg {
     Rsi = 0b0000000000100000,
     Rbp = 0b0000000001000000,
     Rsp = 0b0000000010000000,
-    R8  = 0b0000000100000000,
-    R9  = 0b0000001000000000,
+    R8 = 0b0000000100000000,
+    R9 = 0b0000001000000000,
     R10 = 0b0000010000000000,
     R11 = 0b0000100000000000,
     R12 = 0b0001000000000000,
@@ -32,8 +32,8 @@ impl Reg {
             Reg::Rsi => "sil",
             Reg::Rbp => "bpl",
             Reg::Rsp => "spl",
-            Reg::R8  => "r8b",
-            Reg::R9  => "r9b",
+            Reg::R8 => "r8b",
+            Reg::R9 => "r9b",
             Reg::R10 => "r10b",
             Reg::R11 => "r11b",
             Reg::R12 => "r12b",
@@ -100,7 +100,7 @@ impl Reg {
 // Efficiently represents a set of registers
 #[derive(Clone)]
 pub struct RegSet {
-    bitmask: u16
+    bitmask: u16,
 }
 
 impl RegSet {
@@ -109,19 +109,27 @@ impl RegSet {
     }
 
     pub fn of(reg: Reg) -> RegSet {
-        RegSet { bitmask: reg as u16 }
+        RegSet {
+            bitmask: reg as u16,
+        }
     }
 
     pub fn usable_caller_save() -> RegSet {
         let registers = [
-            Reg::Rax, Reg::Rcx, Reg::Rdx, Reg::Rdi,
-            Reg::Rsi, Reg::R8,  Reg::R9,  Reg::R10,
+            Reg::Rax,
+            Reg::Rcx,
+            Reg::Rdx,
+            Reg::Rdi,
+            Reg::Rsi,
+            Reg::R8,
+            Reg::R9,
+            Reg::R10,
             Reg::R11,
         ];
 
         let mut mask = 0;
         for reg in registers {
-            mask = mask | (reg as u16);
+            mask |= reg as u16;
         }
 
         RegSet { bitmask: mask }
@@ -133,17 +141,21 @@ impl RegSet {
 
     pub fn union(&self, other: RegSet) -> RegSet {
         RegSet {
-            bitmask: self.bitmask | other.bitmask
+            bitmask: self.bitmask | other.bitmask,
         }
     }
 
     pub fn subtract(&self, other: &RegSet) -> RegSet {
-        RegSet { bitmask: self.bitmask & !other.bitmask }
+        RegSet {
+            bitmask: self.bitmask & !other.bitmask,
+        }
     }
 
     pub fn with(&self, reg: Reg) -> RegSet {
         let reg_mask = reg as u16;
-        RegSet { bitmask: self.bitmask | reg_mask }
+        RegSet {
+            bitmask: self.bitmask | reg_mask,
+        }
     }
 
     pub fn first(&self) -> Option<Reg> {
@@ -157,7 +169,7 @@ impl RegSet {
 }
 
 // Where values are located
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Loc {
     // Stack position relative to %rbp
     // +1 means the return address, +2 means 7th arg, +3 means 8th, ...
@@ -173,19 +185,12 @@ pub enum Loc {
 
 impl Loc {
     pub fn is_reg(&self) -> bool {
-        match self {
-            Loc::Register(_) => true,
-            _                => false,
-        }
+        matches!(self, Loc::Register(_))
     }
 
     #[allow(dead_code)]
     pub fn is_mem(&self) -> bool {
-        match self {
-            Loc::Stack(_) => true,
-            Loc::Data(_)  => true,
-            _             => false,
-        }
+        matches!(self, Loc::Stack(_) | Loc::Data(_))
     }
 }
 
@@ -200,8 +205,8 @@ impl fmt::Display for Reg {
             Reg::Rsi => write!(f, "rsi"),
             Reg::Rbp => write!(f, "rbp"),
             Reg::Rsp => write!(f, "rsp"),
-            Reg::R8  => write!(f, "r8"),
-            Reg::R9  => write!(f, "r9"),
+            Reg::R8 => write!(f, "r8"),
+            Reg::R9 => write!(f, "r9"),
             Reg::R10 => write!(f, "r10"),
             Reg::R11 => write!(f, "r11"),
             Reg::R12 => write!(f, "r12"),
@@ -221,10 +226,10 @@ impl fmt::Debug for Reg {
 impl fmt::Display for Loc {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Loc::Stack(offset)    => write!(f, "{}(%rbp)", 8 * offset),
-            Loc::Register(reg)    => write!(f, "%{}", reg),
+            Loc::Stack(offset) => write!(f, "{}(%rbp)", 8 * offset),
+            Loc::Register(reg) => write!(f, "%{}", reg),
             Loc::Immediate(value) => write!(f, "${}", value),
-            Loc::Data(name)       => write!(f, "{}(%rip)", name),
+            Loc::Data(name) => write!(f, "{}(%rip)", name),
         }
     }
 }

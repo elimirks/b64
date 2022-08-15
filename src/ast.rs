@@ -7,8 +7,8 @@ pub struct Pos {
 impl Pos {
     pub fn new(offset: usize, file_id: usize) -> Pos {
         Pos {
-            offset: offset,
-            file_id: file_id,
+            offset,
+            file_id,
         }
     }
 }
@@ -23,16 +23,14 @@ impl CompErr {
     pub fn err<T>(pos: &Pos, message: String) -> Result<T, CompErr> {
         Err(CompErr {
             pos: Some(pos.clone()),
-            message: message,
+            message,
         })
     }
 
-    pub fn from_io_res<T>(
-        io_res: Result<T, std::io::Error>
-    ) -> Result<T, CompErr> {
+    pub fn from_io_res<T>(io_res: Result<T, std::io::Error>) -> Result<T, CompErr> {
         match io_res {
             Ok(result) => Ok(result),
-            Err(err)     => Err(CompErr {
+            Err(err) => Err(CompErr {
                 pos: None,
                 message: err.to_string(),
             }),
@@ -54,10 +52,10 @@ pub struct RootStatements {
 impl RootStatements {
     pub fn new() -> RootStatements {
         RootStatements {
-            functions: vec!(),
-            variables: vec!(),
-            imports: vec!(),
-            defines: vec!(),
+            functions: vec![],
+            variables: vec![],
+            imports: vec![],
+            defines: vec![],
         }
     }
 }
@@ -147,26 +145,26 @@ pub enum Expr {
     Reference(Pos, String),
     Dereference(Pos, Box<Expr>),
 }
- 
+
 impl GetPos for Expr {
     fn pos(&self) -> Pos {
         match self {
-            Expr::Id(pos, _)                 => pos.clone(),
-            Expr::Str(pos, _)                => pos.clone(),
-            Expr::Call(pos, _, _)            => pos.clone(),
-            Expr::Int(pos, _)                => pos.clone(),
-            Expr::Assignment(pos, _, _)      => pos.clone(),
+            Expr::Id(pos, _) => pos.clone(),
+            Expr::Str(pos, _) => pos.clone(),
+            Expr::Call(pos, _, _) => pos.clone(),
+            Expr::Int(pos, _) => pos.clone(),
+            Expr::Assignment(pos, _, _) => pos.clone(),
             Expr::DerefAssignment(pos, _, _) => pos.clone(),
-            Expr::UnaryOperator(pos, _, _)   => pos.clone(),
-            Expr::BinOperator(pos, _, _, _)  => pos.clone(),
-            Expr::Reference(pos, _)          => pos.clone(),
-            Expr::Dereference(pos, _)        => pos.clone(),
-            Expr::Cond(pos, _, _, _)         => pos.clone(),
+            Expr::UnaryOperator(pos, _, _) => pos.clone(),
+            Expr::BinOperator(pos, _, _, _) => pos.clone(),
+            Expr::Reference(pos, _) => pos.clone(),
+            Expr::Dereference(pos, _) => pos.clone(),
+            Expr::Cond(pos, _, _, _) => pos.clone(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum BinOp {
     Assign(Option<Box<BinOp>>), // FIXME: This shouldn't need to be heap allocated
     Add,
@@ -193,7 +191,7 @@ impl BinOp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum UnaryOp {
     PreIncrement,
     PreDecrement,
@@ -206,14 +204,9 @@ pub enum UnaryOp {
 impl BinOp {
     #[allow(dead_code)]
     pub fn is_comparison(&self) -> bool {
-        match self {
-            BinOp::Eq => true,
-            BinOp::Ne => true,
-            BinOp::Le => true,
-            BinOp::Ge => true,
-            BinOp::Lt => true,
-            BinOp::Gt => true,
-            _      => false,
-        }
+        matches!(
+            self,
+            BinOp::Eq | BinOp::Ne | BinOp::Le | BinOp::Ge | BinOp::Lt | BinOp::Gt
+        )
     }
 }

@@ -1,3 +1,6 @@
+/* Increase the heap size in increments of 32KiB */
+#define _HEAP_INCREMENT 077777;
+
 _heapBegin 0;
 _heapEnd 0;
 
@@ -9,7 +12,7 @@ malloc(count) {
     extrn _heapBegin, _heapEnd;
     if (_heapBegin == 0) {
         _heapBegin = syscall(12, 0);
-        _heapEnd = syscall(12, _heapBegin + 077777);
+        _heapEnd = syscall(12, _heapBegin + _HEAP_INCREMENT);
         /* Slot header: (size << 1) + occupiedBit  */
         /* size=0 and occupied=0 indicate the end of the chunk list */
         *_heapBegin = 0;
@@ -33,8 +36,7 @@ malloc(count) {
         ptrEnd = ptr + byteCount + 8;
 
         if (ptrEnd >= _heapEnd) {
-            /* Increase the heap size in increments of 32KiB */
-            _heapEnd = syscall(12, (ptrEnd + 077777) & ~077777);
+            _heapEnd = syscall(12, (ptrEnd + _HEAP_INCREMENT) & ~_HEAP_INCREMENT);
         }
         /* Set a new null terminator */
         *ptrEnd = 0;

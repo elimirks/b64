@@ -77,16 +77,13 @@ fn compile(input_paths: &Vec<String>, output_path: &String) {
         .spawn()
         .expect("Failed running the GNU Assembler");
 
-    let parse_result = parse_or_die(&input_paths);
+    let parse_result = parse_or_die(input_paths);
     // Stream the assembly code straight into GNU assembler
     generate(parse_result, &mut as_process.stdin.as_ref().unwrap());
 
     match as_process.wait() {
         Ok(status) => if !status.success() {
-            let code = match status.code() {
-                Some(code) => code,
-                None       => 1,
-            };
+            let code = status.code().unwrap_or(1);
             std::process::exit(code);
         },
         Err(message) => {
@@ -103,10 +100,7 @@ fn compile(input_paths: &Vec<String>, output_path: &String) {
         .expect("Failed running GNU Linker");
 
     if !ld_status.success() {
-        let code = match ld_status.code() {
-            Some(code) => code,
-            None       => 1,
-        };
+        let code = ld_status.code().unwrap_or(1);
         std::process::exit(code);
     } else {
         fs::remove_file(tmp_obj_path).unwrap();
@@ -184,7 +178,7 @@ fn parse_or_die(inputs: &Vec<String>) -> ParseResult {
     let parse_result = parse_files(inputs);
 
     for err in &parse_result.errors {
-        print_comp_error(&parse_result.file_paths, &err);
+        print_comp_error(&parse_result.file_paths, err);
     }
     if !parse_result.errors.is_empty() {
         std::process::exit(1);
