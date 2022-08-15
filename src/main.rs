@@ -5,15 +5,15 @@ mod parser;
 mod tokenizer;
 mod util;
 
-use std::fs;
-use std::io;
-use std::env;
-use std::process::{Command, Stdio};
 use std::collections::hash_map::DefaultHasher;
+use std::env;
+use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io;
+use std::process::{Command, Stdio};
 
-use parser::*;
 use codegen::generate;
+use parser::*;
 
 struct Opts {
     asm: bool,
@@ -41,7 +41,7 @@ fn main() {
         } else {
             match opts.output {
                 Some(output) => output,
-                None         => "a.out".to_string(),
+                None => "a.out".to_string(),
             }
         };
 
@@ -57,7 +57,7 @@ fn main() {
 
             std::process::exit(match prog_status.code() {
                 Some(code) => code,
-                _          => 1,
+                _ => 1,
             });
         }
     }
@@ -77,22 +77,21 @@ fn compile(input_paths: &Vec<String>, output_path: &String) {
         .spawn()
         .expect("Failed running the GNU Assembler");
 
-    let parse_result = parse_or_die(&input_paths);
+    let parse_result = parse_or_die(input_paths);
     // Stream the assembly code straight into GNU assembler
     generate(parse_result, &mut as_process.stdin.as_ref().unwrap());
 
     match as_process.wait() {
-        Ok(status) => if !status.success() {
-            let code = match status.code() {
-                Some(code) => code,
-                None       => 1,
-            };
-            std::process::exit(code);
-        },
+        Ok(status) => {
+            if !status.success() {
+                let code = status.code().unwrap_or(1);
+                std::process::exit(code);
+            }
+        }
         Err(message) => {
             println!("Failed running GNU Assembler: {}", message);
             std::process::exit(1);
-        },
+        }
     }
 
     let ld_status = Command::new("ld")
@@ -103,10 +102,7 @@ fn compile(input_paths: &Vec<String>, output_path: &String) {
         .expect("Failed running GNU Linker");
 
     if !ld_status.success() {
-        let code = match ld_status.code() {
-            Some(code) => code,
-            None       => 1,
-        };
+        let code = ld_status.code().unwrap_or(1);
         std::process::exit(code);
     } else {
         fs::remove_file(tmp_obj_path).unwrap();
@@ -121,8 +117,8 @@ fn parse_opts() -> Opts {
         asm: false,
         run: false,
         output: None,
-        inputs: vec!(),
-        args: vec!(),
+        inputs: vec![],
+        args: vec![],
     };
 
     let mut i = 1;
@@ -140,13 +136,13 @@ fn parse_opts() -> Opts {
             "-h" | "--help" => {
                 print_usage(&name);
                 std::process::exit(0);
-            },
+            }
             "-s" => {
                 opts.asm = true;
-            },
+            }
             "-r" => {
                 opts.run = true;
-            },
+            }
             "-o" => {
                 if i + 1 >= args.len() {
                     print_usage(&name);
@@ -154,11 +150,9 @@ fn parse_opts() -> Opts {
                 }
                 i += 1;
                 opts.output = Some(args[i].clone());
-            },
+            }
             "--" => pass_through = true,
-            input => {
-                opts.inputs.push(input.to_string())
-            },
+            input => opts.inputs.push(input.to_string()),
         }
 
         i += 1;
@@ -184,7 +178,7 @@ fn parse_or_die(inputs: &Vec<String>) -> ParseResult {
     let parse_result = parse_files(inputs);
 
     for err in &parse_result.errors {
-        print_comp_error(&parse_result.file_paths, &err);
+        print_comp_error(&parse_result.file_paths, err);
     }
     if !parse_result.errors.is_empty() {
         std::process::exit(1);

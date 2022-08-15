@@ -49,6 +49,7 @@ main() {
             it =+ reclen;
         }
     }
+    printf("Great success!*n");
 }
 
 print_divider(len) {

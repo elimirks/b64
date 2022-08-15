@@ -1,7 +1,7 @@
-use std::sync::Condvar;
-use crate::util::logical_cpu_count;
 use crate::ast::*;
 use crate::tokenizer::*;
+use crate::util::logical_cpu_count;
+use std::sync::Condvar;
 
 use std::collections::HashSet;
 use std::ops::DerefMut;
@@ -24,12 +24,12 @@ pub struct ParseResult {
 impl ParseResult {
     fn new() -> ParseResult {
         ParseResult {
-            file_paths: vec!(),
-            strings: vec!(),
-            functions: vec!(),
-            variables: vec!(),
-            defines: vec!(),
-            errors: vec!(),
+            file_paths: vec![],
+            strings: vec![],
+            functions: vec![],
+            variables: vec![],
+            defines: vec![],
+            errors: vec![],
         }
     }
 }
@@ -48,7 +48,7 @@ impl ParseState {
     fn new() -> ParseState {
         ParseState {
             result: ParseResult::new(),
-            parse_stack: vec!(),
+            parse_stack: vec![],
             parsed_set: HashSet::new(),
             running_parsers: 0,
             file_id: 0,
@@ -91,23 +91,18 @@ impl ParseContext<'_> {
     }
 }
 
-fn parse_root_var(
-    c: &mut ParseContext, name: String
-) -> Result<RSVariable, CompErr> {
+fn parse_root_var(c: &mut ParseContext, name: String) -> Result<RSVariable, CompErr> {
     let pos = c.pos();
     let var = parse_var_entry(c, name)?;
     parse_tok(c, Token::Semicolon)?;
-    Ok(RSVariable{
-        pos: pos,
-        var: var,
-    })
+    Ok(RSVariable { pos, var })
 }
 
 // Packs the given chars into 64 bit wide chars.
 // Return value will always be null terminated.
 // Expects all chars to be valid!
 pub fn pack_chars(chars: &Vec<char>) -> Vec<i64> {
-    let mut values = vec!();
+    let mut values = vec![];
     let mut i = 0;
 
     while i < chars.len() {
@@ -128,20 +123,20 @@ pub fn pack_chars(chars: &Vec<char>) -> Vec<i64> {
 }
 
 fn parse_vec_values(c: &mut ParseContext) -> Result<Vec<i64>, CompErr> {
-    let mut values = vec!();
+    let mut values = vec![];
 
     match pop_tok(c)? {
         (_, Token::Int(value)) => {
             values.push(value);
-        },
+        }
         (_, Token::Char(chars)) => {
             values.push(pack_chars(&chars)[0]);
-        },
+        }
         (_, Token::Str(chars)) => return Ok(pack_chars(&chars)),
         other => {
             push_tok(c, other);
             return Ok(values);
-        },
+        }
     };
     // At this point, we're starting at comma
     loop {
@@ -150,88 +145,74 @@ fn parse_vec_values(c: &mut ParseContext) -> Result<Vec<i64>, CompErr> {
                 match pop_tok(c)? {
                     (_, Token::Int(value)) => {
                         values.push(value);
-                    },
+                    }
                     (_, Token::Char(chars)) => {
                         values.push(pack_chars(&chars)[0]);
-                    },
+                    }
                     other => {
                         // Unfortunately, B has ambiguous grammar...
                         // So we're forced to push 2 tokens :(
                         push_tok(c, (comma_pos, Token::Comma));
                         push_tok(c, other);
                         break;
-                    },
+                    }
                 }
-            },
+            }
             other => {
                 push_tok(c, other);
                 break;
-            },
+            }
         }
     }
-    return Ok(values);
+    Ok(values)
 }
 
 fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
     match pop_tok(c)? {
-       (_, Token::LBracket) => {
-           let given_vec_size = match pop_tok(c)? {
-               (_, Token::Int(max_index)) if max_index >= 0 => {
-                   parse_tok(c, Token::RBracket)?;
-                   max_index + 1
-               },
-               (_, Token::RBracket) => 0,
-               (pos, other) => {
-                   return CompErr::err(&pos, format!(
-                       "Expected positive int. Found {:?}", other));
-               },
-           };
-           let vec_values = parse_vec_values(c)?;
-           // According to the B spec, we choose the max of these two values for
-           // the catual vector size
-           let vec_size = std::cmp::max(given_vec_size, vec_values.len() as i64);
-           Ok(Var::Vec(name, vec_size, vec_values))
-        },
-        (_, Token::Int(value)) => {
-            Ok(Var::Single(name, Some(value)))
-        },
-        (_, Token::Char(chars)) => {
-            Ok(Var::Single(name, Some(pack_chars(&chars)[0])))
-        },
+        (_, Token::LBracket) => {
+            let given_vec_size = match pop_tok(c)? {
+                (_, Token::Int(max_index)) if max_index >= 0 => {
+                    parse_tok(c, Token::RBracket)?;
+                    max_index + 1
+                }
+                (_, Token::RBracket) => 0,
+                (pos, other) => {
+                    return CompErr::err(&pos, format!("Expected positive int. Found {:?}", other));
+                }
+            };
+            let vec_values = parse_vec_values(c)?;
+            // According to the B spec, we choose the max of these two values for
+            // the catual vector size
+            let vec_size = std::cmp::max(given_vec_size, vec_values.len() as i64);
+            Ok(Var::Vec(name, vec_size, vec_values))
+        }
+        (_, Token::Int(value)) => Ok(Var::Single(name, Some(value))),
+        (_, Token::Char(chars)) => Ok(Var::Single(name, Some(pack_chars(&chars)[0]))),
         other => {
             push_tok(c, other);
             Ok(Var::Single(name, None))
-        },
+        }
     }
 }
 
 // Expects the #import token to have been parsed
-fn parse_import(
-    c: &mut ParseContext
-) -> Result<RSImport, CompErr> {
+fn parse_import(c: &mut ParseContext) -> Result<RSImport, CompErr> {
     match pop_tok(c)? {
         (pos, Token::Str(chars)) => {
             let path: String = chars.into_iter().collect();
             parse_tok(c, Token::Semicolon)?;
-            Ok(RSImport {
-                pos: pos,
-                path: path,
-            })
-        },
-        (pos, tok) => CompErr::err(&pos, format!(
-            "String expected. {:?} given", tok)),
+            Ok(RSImport { pos, path })
+        }
+        (pos, tok) => CompErr::err(&pos, format!("String expected. {:?} given", tok)),
     }
 }
 
 // Expects the #define token to have been parsed
-fn parse_define(
-    c: &mut ParseContext
-) -> Result<RSDefine, CompErr> {
+fn parse_define(c: &mut ParseContext) -> Result<RSDefine, CompErr> {
     let pos = c.pos();
     let name = match pop_tok(c)? {
         (_, Token::Id(id)) => id,
-        (pos, tok) => return CompErr::err(&pos, format!(
-            "ID expected. {:?} given", tok)),
+        (pos, tok) => return CompErr::err(&pos, format!("ID expected. {:?} given", tok)),
     };
 
     // Handles cases with ambiguous parens
@@ -252,7 +233,7 @@ fn parse_define(
     let args = if should_parse_args {
         parse_args(c)?
     } else {
-        vec!()
+        vec![]
     };
     let body = parse_expr(c)?;
     parse_tok(c, Token::Semicolon)?;
@@ -265,9 +246,7 @@ fn parse_define(
     })
 }
 
-fn parse_args(
-    c: &mut ParseContext
-) -> Result<Vec<String>, CompErr> {
+fn parse_args(c: &mut ParseContext) -> Result<Vec<String>, CompErr> {
     parse_tok(c, Token::LParen)?;
 
     let mut args = Vec::<String>::new();
@@ -282,21 +261,18 @@ fn parse_args(
             Token::RParen => break,
             Token::Id(id) => {
                 if !should_parse_param {
-                    return CompErr::err(
-                        &pos, "Comma expected, id found".to_string());
+                    return CompErr::err(&pos, "Comma expected, id found".to_string());
                 }
                 args.push(id);
                 should_parse_param = false;
-            },
+            }
             Token::Comma => {
                 if should_parse_param {
-                    return CompErr::err(
-                        &pos, "id expected, comma found".to_string());
+                    return CompErr::err(&pos, "id expected, comma found".to_string());
                 }
                 should_parse_param = true;
-            },
-            other => return CompErr::err(
-                    &pos, format!("Unexpected token: {:?}", other)),
+            }
+            other => return CompErr::err(&pos, format!("Unexpected token: {:?}", other)),
         }
     }
 
@@ -304,9 +280,7 @@ fn parse_args(
 }
 
 // Parses everything after the name of a function
-fn parse_fun(
-    c: &mut ParseContext, pos: Pos, name: String
-) -> Result<RSFunction, CompErr> {
+fn parse_fun(c: &mut ParseContext, pos: Pos, name: String) -> Result<RSFunction, CompErr> {
     Ok(RSFunction {
         pos,
         name,
@@ -319,29 +293,27 @@ fn parse_statement(c: &mut ParseContext) -> Result<Statement, CompErr> {
     let (pos, tok) = pop_tok(c)?;
 
     match tok {
-        Token::Return      => parse_statement_return(c),
-        Token::Break       => parse_statement_break(c, pos),
-        Token::LBrace      => parse_statement_block(c),
-        Token::Auto        => parse_statement_auto(c, pos),
-        Token::Extern      => parse_statement_extern(c, pos),
-        Token::If          => parse_statement_if(c),
-        Token::While       => parse_statement_while(c),
-        Token::Switch      => parse_statement_switch(c),
-        Token::Semicolon   => Ok(Statement::Null),
+        Token::Return => parse_statement_return(c),
+        Token::Break => parse_statement_break(c, pos),
+        Token::LBrace => parse_statement_block(c),
+        Token::Auto => parse_statement_auto(c, pos),
+        Token::Extern => parse_statement_extern(c, pos),
+        Token::If => parse_statement_if(c),
+        Token::While => parse_statement_while(c),
+        Token::Switch => parse_statement_switch(c),
+        Token::Semicolon => Ok(Statement::Null),
         Token::Label(name) => Ok(Statement::Label(pos, name)),
-        Token::Goto        => parse_statement_goto(c),
+        Token::Goto => parse_statement_goto(c),
         tok => {
             push_tok(c, (pos, tok));
             parse_statement_expr(c)
-        },
+        }
     }
 }
 
 // TODO: This loop delim technique is used in multiple places. Abstract away!
 // Expects opening `extrn` to have been parsed
-fn parse_statement_extern(
-    c: &mut ParseContext, pos: Pos
-) -> Result<Statement, CompErr> {
+fn parse_statement_extern(c: &mut ParseContext, pos: Pos) -> Result<Statement, CompErr> {
     let mut ids = Vec::<String>::new();
     let mut should_parse_param = true;
 
@@ -352,31 +324,26 @@ fn parse_statement_extern(
             Token::Semicolon => break,
             Token::Id(id) => {
                 if !should_parse_param {
-                    return CompErr::err(
-                        &pos, "Comma expected, id found".to_string());
+                    return CompErr::err(&pos, "Comma expected, id found".to_string());
                 }
 
                 ids.push(id);
                 should_parse_param = false;
-            },
+            }
             Token::Comma => {
                 if should_parse_param {
-                    return CompErr::err(
-                        &pos, "id expected, comma found".to_string());
+                    return CompErr::err(&pos, "id expected, comma found".to_string());
                 }
                 should_parse_param = true;
-            },
-            other => return CompErr::err(
-                &pos, format!("Unexpected token: {:?}", other)),
+            }
+            other => return CompErr::err(&pos, format!("Unexpected token: {:?}", other)),
         }
     }
     Ok(Statement::Extern(pos, ids))
 }
 
 // Expects opening `auto` to have been parsed
-fn parse_statement_auto(
-    c: &mut ParseContext, pos: Pos
-) -> Result<Statement, CompErr> {
+fn parse_statement_auto(c: &mut ParseContext, pos: Pos) -> Result<Statement, CompErr> {
     let mut vars = Vec::<Var>::new();
     let mut should_parse_param = true;
 
@@ -386,22 +353,19 @@ fn parse_statement_auto(
             Token::Semicolon => break,
             Token::Id(id) => {
                 if !should_parse_param {
-                    return CompErr::err(
-                        &pos, "Comma expected, id found".to_string());
+                    return CompErr::err(&pos, "Comma expected, id found".to_string());
                 }
 
                 vars.push(parse_var_entry(c, id)?);
                 should_parse_param = false;
-            },
+            }
             Token::Comma => {
                 if should_parse_param {
-                    return CompErr::err(
-                        &pos, "id expected, comma found".to_string());
+                    return CompErr::err(&pos, "id expected, comma found".to_string());
                 }
                 should_parse_param = true;
-            },
-            other => return CompErr::err(
-                &pos, format!("Unexpected token: {:?}", other)),
+            }
+            other => return CompErr::err(&pos, format!("Unexpected token: {:?}", other)),
         }
     }
     Ok(Statement::Auto(pos, vars))
@@ -420,14 +384,10 @@ fn parse_statement_if(c: &mut ParseContext) -> Result<Statement, CompErr> {
         other => {
             push_tok(c, other);
             None
-        },
+        }
     };
 
-    Ok(Statement::If(
-        cond_expr,
-        Box::new(if_body),
-        else_body
-    ))
+    Ok(Statement::If(cond_expr, Box::new(if_body), else_body))
 }
 
 // Expect "goto" to have been parsed already
@@ -436,7 +396,7 @@ fn parse_statement_goto(c: &mut ParseContext) -> Result<Statement, CompErr> {
         (pos, Token::Id(name)) => {
             parse_tok(c, Token::Semicolon)?;
             Ok(Statement::Goto(pos, name))
-        },
+        }
         (pos, _) => CompErr::err(&pos, "Expected ID".to_string()),
     }
 }
@@ -449,28 +409,32 @@ fn parse_statement_switch(c: &mut ParseContext) -> Result<Statement, CompErr> {
     // As per the B spec, switch bodies must always be compound statements
     parse_tok(c, Token::LBrace)?;
 
-    let mut inner_statements = vec!();
+    let mut inner_statements = vec![];
     loop {
         let inner = match pop_tok(c)? {
             (pos, Token::Default) => {
                 parse_tok(c, Token::Colon)?;
                 SwInner::Default(pos)
-            },
+            }
             (pos, Token::Case) => {
                 let value = match pop_tok(c)? {
-                    (_, Token::Int(value))  => value,
+                    (_, Token::Int(value)) => value,
                     (_, Token::Char(chars)) => pack_chars(&chars)[0],
-                    (pos, tok) => return CompErr::err(
-                        &pos, format!("Int or char expected, {:?} given.", tok)),
+                    (pos, tok) => {
+                        return CompErr::err(
+                            &pos,
+                            format!("Int or char expected, {:?} given.", tok),
+                        )
+                    }
                 };
                 parse_tok(c, Token::Colon)?;
                 SwInner::Case(pos, value)
-            },
+            }
             (_, Token::RBrace) => break,
             other => {
                 push_tok(c, other);
                 SwInner::Statement(parse_statement(c)?)
-            },
+            }
         };
         inner_statements.push(inner);
     }
@@ -484,10 +448,7 @@ fn parse_statement_while(c: &mut ParseContext) -> Result<Statement, CompErr> {
     parse_tok(c, Token::RParen)?;
     let body = parse_statement(c)?;
 
-    Ok(Statement::While(
-        cond_expr,
-        Box::new(body)
-    ))
+    Ok(Statement::While(cond_expr, Box::new(body)))
 }
 
 // Expects opening `{` to have been parsed
@@ -500,7 +461,7 @@ fn parse_statement_block(c: &mut ParseContext) -> Result<Statement, CompErr> {
             other => {
                 push_tok(c, other);
                 statements.push(parse_statement(c)?);
-            },
+            }
         }
     }
 
@@ -508,9 +469,7 @@ fn parse_statement_block(c: &mut ParseContext) -> Result<Statement, CompErr> {
 }
 
 // Expects the `break` keyword to have been parsed already
-fn parse_statement_break(
-    c: &mut ParseContext, pos: Pos
-) -> Result<Statement, CompErr> {
+fn parse_statement_break(c: &mut ParseContext, pos: Pos) -> Result<Statement, CompErr> {
     parse_tok(c, Token::Semicolon)?;
     Ok(Statement::Break(pos))
 }
@@ -518,10 +477,9 @@ fn parse_statement_break(
 // Expects the `return` keyword to have been parsed already
 fn parse_statement_return(c: &mut ParseContext) -> Result<Statement, CompErr> {
     match pop_tok(c)? {
-        (_, Token::LParen) => {},
+        (_, Token::LParen) => {}
         (_, Token::Semicolon) => return Ok(Statement::Return),
-        (pos, _) => return CompErr::err(&pos, format!(
-            "Expected ( or ; after return statment")),
+        (pos, _) => return CompErr::err(&pos, "Expected ( or ; after return statment".to_owned()),
     }
 
     let expr = parse_expr(c)?;
@@ -544,15 +502,15 @@ fn parse_expr(c: &mut ParseContext) -> Result<Expr, CompErr> {
 const COND_EXPR_PRECEDENCE: u8 = 2;
 fn get_lr_op_precedence(op: &BinOp) -> u8 {
     match op {
-        BinOp::Div       | BinOp::Mod | BinOp::Mul            => 10,
-        BinOp::Add       | BinOp::Sub                         => 9,
-        BinOp::ShiftLeft | BinOp::ShiftRight                  => 8,
-        BinOp::Gt        | BinOp::Lt  | BinOp::Ge | BinOp::Le => 7,
-        BinOp::Eq        | BinOp::Ne                          => 6,
-        BinOp::And                                            => 5,
-        BinOp::Xor                                            => 4,
-        BinOp::Or                                             => 3,
-        BinOp::Assign(_)                                      => 1,
+        BinOp::Div | BinOp::Mod | BinOp::Mul => 10,
+        BinOp::Add | BinOp::Sub => 9,
+        BinOp::ShiftLeft | BinOp::ShiftRight => 8,
+        BinOp::Gt | BinOp::Lt | BinOp::Ge | BinOp::Le => 7,
+        BinOp::Eq | BinOp::Ne => 6,
+        BinOp::And => 5,
+        BinOp::Xor => 4,
+        BinOp::Or => 3,
+        BinOp::Assign(_) => 1,
     }
 }
 
@@ -560,9 +518,7 @@ fn get_lr_op_precedence(op: &BinOp) -> u8 {
  * Tries parsing operators until the precedence value doesn't meet requirement.
  * In other words, it recurses, but doesn't consume lower priority ops.
  */
-fn parse_expr_prec(
-    c: &mut ParseContext, precedence: u8
-) -> Result<Expr, CompErr> {
+fn parse_expr_prec(c: &mut ParseContext, precedence: u8) -> Result<Expr, CompErr> {
     let unchained = parse_expr_unchained(c)?;
     let mut expr = parse_postfix(c, unchained)?;
     loop {
@@ -576,7 +532,7 @@ fn parse_expr_prec(
                     push_tok(c, (pos, tok));
                     return Ok(expr);
                 }
-            },
+            }
             (pos, Token::Question, _) if COND_EXPR_PRECEDENCE >= precedence => {
                 let true_expr = parse_expr_prec(c, COND_EXPR_PRECEDENCE)?;
                 parse_tok(c, Token::Colon)?;
@@ -586,19 +542,21 @@ fn parse_expr_prec(
                     pos,
                     Box::new(expr),
                     Box::new(true_expr),
-                    Box::new(false_expr)
+                    Box::new(false_expr),
                 )
-            },
+            }
             (pos, tok, _) => {
                 push_tok(c, (pos, tok));
-                return Ok(expr)
-            },
+                return Ok(expr);
+            }
         }
     }
 }
 
 fn join_assignment(
-    post_op: Option<Box::<BinOp>>, lhs_expr: Expr, rhs_expr: Expr
+    post_op: Option<Box<BinOp>>,
+    lhs_expr: Expr,
+    rhs_expr: Expr,
 ) -> Result<Expr, CompErr> {
     match lhs_expr {
         Expr::Id(pos, id) => {
@@ -607,41 +565,32 @@ fn join_assignment(
                     pos.clone(),
                     *post_op,
                     Box::new(Expr::Id(pos.clone(), id.to_string())),
-                    Box::new(rhs_expr)
+                    Box::new(rhs_expr),
                 ),
-                None => rhs_expr
+                None => rhs_expr,
             };
-            Ok(Expr::Assignment(
-                pos,
-                id,
-                Box::new(rhs)
-            ))
-        },
+            Ok(Expr::Assignment(pos, id, Box::new(rhs)))
+        }
         Expr::Dereference(pos, lhs) => {
             let rhs = match post_op {
                 Some(post_op) => Expr::BinOperator(
                     pos.clone(),
                     *post_op,
                     Box::new(Expr::Dereference(pos.clone(), lhs.clone())),
-                    Box::new(rhs_expr)
+                    Box::new(rhs_expr),
                 ),
-                None => rhs_expr
+                None => rhs_expr,
             };
-            Ok(Expr::DerefAssignment(
-                pos,
-                lhs,
-                Box::new(rhs)
-            ))
-        },
+            Ok(Expr::DerefAssignment(pos, lhs, Box::new(rhs)))
+        }
         _ => CompErr::err(
             &lhs_expr.pos(),
-            "lhs of assignment must be ID or deref".to_string()),
+            "lhs of assignment must be ID or deref".to_string(),
+        ),
     }
 }
 
-fn join_exprs(
-    op: BinOp, lhs: Expr, rhs: Expr
-) -> Result<Expr, CompErr> {
+fn join_exprs(op: BinOp, lhs: Expr, rhs: Expr) -> Result<Expr, CompErr> {
     if let BinOp::Assign(post_op) = op {
         join_assignment(post_op, lhs, rhs)
     } else {
@@ -649,60 +598,56 @@ fn join_exprs(
             lhs.pos(),
             op,
             Box::new(lhs),
-            Box::new(rhs)
+            Box::new(rhs),
         ))
     }
 }
 
 // Always returns the next token
 // Optionally returns a binop if appropriate
-fn parse_op(
-    c: &mut ParseContext
-) -> Result<(Pos, Token, Option<BinOp>), CompErr> {
+fn parse_op(c: &mut ParseContext) -> Result<(Pos, Token, Option<BinOp>), CompErr> {
     let (pos, tok) = pop_tok(c)?;
 
     let binop = match tok {
-        Token::EqEq         => Some(BinOp::Eq),
-        Token::Eq           => Some(BinOp::Assign(None)),
+        Token::EqEq => Some(BinOp::Eq),
+        Token::Eq => Some(BinOp::Assign(None)),
         Token::EqShiftRight => Some(BinOp::assign(BinOp::ShiftRight)),
-        Token::EqGe         => Some(BinOp::assign(BinOp::Ge)),
-        Token::EqShiftLeft  => Some(BinOp::assign(BinOp::ShiftLeft)),
-        Token::EqLe         => Some(BinOp::assign(BinOp::Le)),
-        Token::EqNe         => Some(BinOp::assign(BinOp::Ne)),
-        Token::EqEqEq       => Some(BinOp::assign(BinOp::Eq)),
-        Token::EqPlus       => Some(BinOp::assign(BinOp::Add)),
-        Token::EqMinus      => Some(BinOp::assign(BinOp::Sub)),
-        Token::EqLt         => Some(BinOp::assign(BinOp::Lt)),
-        Token::EqGt         => Some(BinOp::assign(BinOp::Gt)),
-        Token::EqAmpersand  => Some(BinOp::assign(BinOp::And)),
-        Token::EqPipe       => Some(BinOp::assign(BinOp::Or)),
-        Token::EqCaret      => Some(BinOp::assign(BinOp::Xor)),
-        Token::EqPercent    => Some(BinOp::assign(BinOp::Mod)),
-        Token::EqSlash      => Some(BinOp::assign(BinOp::Div)),
-        Token::EqAsterisk   => Some(BinOp::assign(BinOp::Mul)),
-        Token::Plus         => Some(BinOp::Add),
-        Token::Minus        => Some(BinOp::Sub),
-        Token::Le           => Some(BinOp::Le),
-        Token::Lt           => Some(BinOp::Lt),
-        Token::Ge           => Some(BinOp::Ge),
-        Token::Gt           => Some(BinOp::Gt),
-        Token::Ne           => Some(BinOp::Ne),
-        Token::ShiftLeft    => Some(BinOp::ShiftLeft),
-        Token::ShiftRight   => Some(BinOp::ShiftRight),
-        Token::Ampersand    => Some(BinOp::And),
-        Token::Pipe         => Some(BinOp::Or),
-        Token::Caret        => Some(BinOp::Xor),
-        Token::Percent      => Some(BinOp::Mod),
-        Token::Slash        => Some(BinOp::Div),
-        Token::Asterisk     => Some(BinOp::Mul),
-        _                   => None,
+        Token::EqGe => Some(BinOp::assign(BinOp::Ge)),
+        Token::EqShiftLeft => Some(BinOp::assign(BinOp::ShiftLeft)),
+        Token::EqLe => Some(BinOp::assign(BinOp::Le)),
+        Token::EqNe => Some(BinOp::assign(BinOp::Ne)),
+        Token::EqEqEq => Some(BinOp::assign(BinOp::Eq)),
+        Token::EqPlus => Some(BinOp::assign(BinOp::Add)),
+        Token::EqMinus => Some(BinOp::assign(BinOp::Sub)),
+        Token::EqLt => Some(BinOp::assign(BinOp::Lt)),
+        Token::EqGt => Some(BinOp::assign(BinOp::Gt)),
+        Token::EqAmpersand => Some(BinOp::assign(BinOp::And)),
+        Token::EqPipe => Some(BinOp::assign(BinOp::Or)),
+        Token::EqCaret => Some(BinOp::assign(BinOp::Xor)),
+        Token::EqPercent => Some(BinOp::assign(BinOp::Mod)),
+        Token::EqSlash => Some(BinOp::assign(BinOp::Div)),
+        Token::EqAsterisk => Some(BinOp::assign(BinOp::Mul)),
+        Token::Plus => Some(BinOp::Add),
+        Token::Minus => Some(BinOp::Sub),
+        Token::Le => Some(BinOp::Le),
+        Token::Lt => Some(BinOp::Lt),
+        Token::Ge => Some(BinOp::Ge),
+        Token::Gt => Some(BinOp::Gt),
+        Token::Ne => Some(BinOp::Ne),
+        Token::ShiftLeft => Some(BinOp::ShiftLeft),
+        Token::ShiftRight => Some(BinOp::ShiftRight),
+        Token::Ampersand => Some(BinOp::And),
+        Token::Pipe => Some(BinOp::Or),
+        Token::Caret => Some(BinOp::Xor),
+        Token::Percent => Some(BinOp::Mod),
+        Token::Slash => Some(BinOp::Div),
+        Token::Asterisk => Some(BinOp::Mul),
+        _ => None,
     };
     Ok((pos, tok, binop))
 }
 
-fn parse_expr_id_unchained(
-    c: &mut ParseContext, id: String
-) -> Result<Expr, CompErr> {
+fn parse_expr_id_unchained(c: &mut ParseContext, id: String) -> Result<Expr, CompErr> {
     let (pos, tok) = pop_tok(c)?;
     match tok {
         // Handle vector index sugar syntax
@@ -710,7 +655,8 @@ fn parse_expr_id_unchained(
             let index_expr = parse_expr(c)?;
             parse_tok(c, Token::RBracket)?;
 
-            Ok(Expr::Dereference(pos.clone(),
+            Ok(Expr::Dereference(
+                pos.clone(),
                 Box::new(Expr::BinOperator(
                     pos.clone(),
                     BinOp::Add,
@@ -720,15 +666,15 @@ fn parse_expr_id_unchained(
                         pos.clone(),
                         BinOp::ShiftLeft,
                         Box::new(index_expr),
-                        Box::new(Expr::Int(pos, 3))
-                    ))
-                ))
+                        Box::new(Expr::Int(pos, 3)),
+                    )),
+                )),
             ))
-        },
+        }
         tok => {
             push_tok(c, (pos.clone(), tok));
             Ok(Expr::Id(pos, id))
-        },
+        }
     }
 }
 
@@ -742,29 +688,39 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
         Token::Str(value) => {
             c.strings.push(value);
             Ok(Expr::Str(pos, (c.file_id, c.strings.len() - 1)))
-        },
+        }
         Token::Ampersand => match pop_tok(c)? {
             (pos, Token::Id(id)) => Ok(Expr::Reference(pos, id)),
             (pos, tok) => CompErr::err(&pos, format!("Expected id, found {:?}", tok)),
         },
-        Token::Asterisk => Ok(Expr::Dereference(
-            pos, Box::new(parse_expr_unchained(c)?))),
+        Token::Asterisk => Ok(Expr::Dereference(pos, Box::new(parse_expr_unchained(c)?))),
         Token::PlusPlus => Ok(Expr::UnaryOperator(
-            pos, UnaryOp::PreIncrement, Box::new(parse_expr_unchained(c)?))),
+            pos,
+            UnaryOp::PreIncrement,
+            Box::new(parse_expr_unchained(c)?),
+        )),
         Token::MinusMinus => Ok(Expr::UnaryOperator(
-            pos, UnaryOp::PreDecrement, Box::new(parse_expr_unchained(c)?))),
+            pos,
+            UnaryOp::PreDecrement,
+            Box::new(parse_expr_unchained(c)?),
+        )),
         Token::Minus => Ok(Expr::UnaryOperator(
-            pos, UnaryOp::Negate, Box::new(parse_expr_unchained(c)?))),
+            pos,
+            UnaryOp::Negate,
+            Box::new(parse_expr_unchained(c)?),
+        )),
         Token::Tilde => Ok(Expr::UnaryOperator(
-            pos, UnaryOp::BitNot, Box::new(parse_expr_unchained(c)?))),
+            pos,
+            UnaryOp::BitNot,
+            Box::new(parse_expr_unchained(c)?),
+        )),
         // Allow parens for disambiguation
         Token::LParen => {
             let expr = parse_expr(c)?;
             parse_tok(c, Token::RParen)?;
             Ok(expr)
-        },
-        other => CompErr::err(&pos, format!(
-            "Expected expression. {:?} found", other))
+        }
+        other => CompErr::err(&pos, format!("Expected expression. {:?} found", other)),
     }
 }
 
@@ -774,25 +730,29 @@ fn parse_postfix(c: &mut ParseContext, expr: Expr) -> Result<Expr, CompErr> {
         Token::MinusMinus => {
             let next = parse_postfix(c, expr)?;
             Ok(Expr::UnaryOperator(
-                pos, UnaryOp::PostDecrement, Box::new(next)))
-        },
+                pos,
+                UnaryOp::PostDecrement,
+                Box::new(next),
+            ))
+        }
         Token::PlusPlus => {
             let next = parse_postfix(c, expr)?;
             Ok(Expr::UnaryOperator(
-                pos, UnaryOp::PostIncrement, Box::new(next)))
-        },
+                pos,
+                UnaryOp::PostIncrement,
+                Box::new(next),
+            ))
+        }
         Token::LParen => parse_expr_call(c, expr),
         _ => {
             push_tok(c, (pos, tok));
             Ok(expr)
-        },
+        }
     }
 }
 
 // Assumes the rparen has already been parsed
-fn parse_expr_call(
-    c: &mut ParseContext, callee: Expr
-) -> Result<Expr, CompErr> {
+fn parse_expr_call(c: &mut ParseContext, callee: Expr) -> Result<Expr, CompErr> {
     let mut params = Vec::<Expr>::new();
     // To alternate between comma & arg parsing
     let mut should_parse_param = true;
@@ -805,20 +765,18 @@ fn parse_expr_call(
             Token::RParen => break,
             Token::Comma => {
                 if should_parse_param {
-                    return CompErr::err(
-                        &pos, "Expr expected, comma found".to_string());
+                    return CompErr::err(&pos, "Expr expected, comma found".to_string());
                 }
                 should_parse_param = true;
-            },
+            }
             tok => {
                 push_tok(c, (pos.clone(), tok));
                 if !should_parse_param {
-                    return CompErr::err(
-                        &pos, "Comma expected".to_string());
+                    return CompErr::err(&pos, "Comma expected".to_string());
                 }
                 params.push(parse_expr(c)?);
                 should_parse_param = false;
-            },
+            }
         }
     }
 
@@ -835,8 +793,8 @@ fn get_parse_position(content: &Vec<char>, offset: usize) -> (String, usize, usi
     let mut col = 0;
     let mut current_row_offset = 0;
 
-    for i in 0..offset {
-        if content[i] as char == '\n' {
+    for (i, item) in content.iter().enumerate().take(offset) {
+        if *item == '\n' {
             row += 1;
             col = 0;
             current_row_offset = i + 1;
@@ -850,14 +808,12 @@ fn get_parse_position(content: &Vec<char>, offset: usize) -> (String, usize, usi
         row_end += 1;
     }
 
-    let line: &String = &content[current_row_offset..row_end]
-        .into_iter()
-        .collect();
+    let line: &String = &content[current_row_offset..row_end].iter().collect();
 
     (line.to_string(), row, col)
 }
 
-pub fn print_comp_error(file_paths: &Vec<(String, PathBuf)>, err: &CompErr) {
+pub fn print_comp_error(file_paths: &[(String, PathBuf)], err: &CompErr) {
     println!("Compile error: {}", err.message);
     match &err.pos {
         Some(pos) => {
@@ -865,8 +821,7 @@ pub fn print_comp_error(file_paths: &Vec<(String, PathBuf)>, err: &CompErr) {
             let content = std::fs::read_to_string(&path_buf).unwrap();
             println!("In file: {}", file_name);
 
-            let (line, row, col) = get_parse_position(
-                &content.chars().collect(), pos.offset);
+            let (line, row, col) = get_parse_position(&content.chars().collect(), pos.offset);
 
             let prefix = format!("{} |", row);
             println!("{}{}", prefix, line);
@@ -876,20 +831,21 @@ pub fn print_comp_error(file_paths: &Vec<(String, PathBuf)>, err: &CompErr) {
             }
 
             println!("^")
-        },
-        None => {},
+        }
+        None => {}
     }
 }
 
 fn parse_content(
-    file_id: usize, content: String
+    file_id: usize,
+    content: String,
 ) -> Result<(RootStatements, Vec<Vec<char>>), CompErr> {
     let mut c = ParseContext {
         content: content.as_bytes(),
         offset: 0,
         file_id,
-        strings: vec!(),
-        tok_stack: vec!(),
+        strings: vec![],
+        tok_stack: vec![],
     };
 
     let mut root_statements = RootStatements::new();
@@ -901,43 +857,36 @@ fn parse_content(
                 match tok {
                     Token::LParen => {
                         push_tok(&mut c, (pos.clone(), Token::LParen));
-                        root_statements.functions.push(
-                            parse_fun(&mut c, pos, id)?);
-                    },
+                        root_statements.functions.push(parse_fun(&mut c, pos, id)?);
+                    }
                     tok => {
                         push_tok(&mut c, (pos, tok));
-                        root_statements.variables.push(
-                            parse_root_var(&mut c, id)?);
-                    },
+                        root_statements.variables.push(parse_root_var(&mut c, id)?);
+                    }
                 }
-            },
-            (_, Token::Import) =>
-                root_statements.imports.push(parse_import(&mut c)?),
-            (_, Token::Define) =>
-                root_statements.defines.push(parse_define(&mut c)?),
+            }
+            (_, Token::Import) => root_statements.imports.push(parse_import(&mut c)?),
+            (_, Token::Define) => root_statements.defines.push(parse_define(&mut c)?),
             (_, Token::Eof) => break,
-            (pos, tok) => return CompErr::err(&pos, format!(
-                "Expected id. {:?} found", tok)),
+            (pos, tok) => return CompErr::err(&pos, format!("Expected id. {:?} found", tok)),
         }
     }
     Ok((root_statements, c.strings))
 }
 
-fn relative_to_canonical_path(
-    base: &PathBuf, imp: &PathBuf
-) -> Result<PathBuf, CompErr> {
+fn relative_to_canonical_path(base: &Path, imp: &PathBuf) -> Result<PathBuf, CompErr> {
     if imp.is_absolute() {
         Ok(imp.clone())
     } else {
         match base.parent() {
             Some(parent) => match parent.join(imp).canonicalize() {
                 Ok(other) => Ok(other),
-                Err(err)  => Err(CompErr {
+                Err(err) => Err(CompErr {
                     pos: None,
                     message: format!("Error importing {:?}: {}", imp, err),
                 }),
             },
-            None         => Ok(imp.clone()),
+            None => Ok(imp.clone()),
         }
     }
 }
@@ -945,15 +894,15 @@ fn relative_to_canonical_path(
 pub fn parse_files(paths: &Vec<String>) -> ParseResult {
     let mut parse_state = ParseState::new();
     for path in paths {
+        #[allow(clippy::expect_fun_call)]
         parse_state.push_path_to_parse(
-            Path::new(path).canonicalize()
-                .expect(format!("Invalid path: {}", path).as_str()));
+            Path::new(path)
+                .canonicalize()
+                .expect(format!("Invalid path: {}", path).as_str()),
+        );
     }
 
-    let parse_state_arc = Arc::new((
-        Mutex::new(parse_state),
-        Condvar::new()
-    ));
+    let parse_state_arc = Arc::new((Mutex::new(parse_state), Condvar::new()));
 
     let thread_count = logical_cpu_count();
     let mut handles = Vec::with_capacity(thread_count);
@@ -974,26 +923,18 @@ pub fn parse_files(paths: &Vec<String>) -> ParseResult {
     let mut final_result = ParseResult::new();
     std::mem::swap(
         &mut mutex.lock().unwrap().deref_mut().result,
-        &mut final_result
+        &mut final_result,
     );
     final_result
 }
 
-fn parse_fiber(
-    parse_state: Arc<(Mutex<ParseState>, Condvar)>
-) {
-    loop {
-        match unpool_file_path(&parse_state) {
-            Some((file_id, path_buf)) =>
-                parse_file(file_id, path_buf, &parse_state),
-            None => break,
-        }
+fn parse_fiber(parse_state: Arc<(Mutex<ParseState>, Condvar)>) {
+    while let Some((file_id, path_buf)) = unpool_file_path(&parse_state) {
+        parse_file(file_id, path_buf, &parse_state);
     }
 }
 
-fn unpool_file_path(
-    parse_state: &Arc<(Mutex<ParseState>, Condvar)>
-) -> Option<(usize, PathBuf)> {
+fn unpool_file_path(parse_state: &Arc<(Mutex<ParseState>, Condvar)>) -> Option<(usize, PathBuf)> {
     let (mutex, cvar) = parse_state.as_ref();
     let mut guard = mutex.lock().ok()?;
 
@@ -1002,20 +943,16 @@ fn unpool_file_path(
         if guard.running_parsers == 0 && guard.parse_stack.is_empty() {
             return None;
         }
-        match guard.pop_path_to_parse() {
-            res @ Some(_) => return res,
-            None => {},
+        let res = guard.pop_path_to_parse();
+        if res.is_some() {
+            return res;
         }
         guard = cvar.wait(guard).ok()?;
     }
 }
 
 // Parse a file, add to the parse state, and notify the cvar
-fn parse_file(
-    file_id: usize,
-    path: PathBuf,
-    parse_state: &Arc<(Mutex<ParseState>, Condvar)>
-) {
+fn parse_file(file_id: usize, path: PathBuf, parse_state: &Arc<(Mutex<ParseState>, Condvar)>) {
     let path_str = path.to_str().unwrap().to_string();
     let content = std::fs::read_to_string(&path).unwrap();
 
@@ -1024,7 +961,7 @@ fn parse_file(
     let parsed_content = parse_content(file_id, content);
     let mut guard = match mutex.lock() {
         Ok(guard) => guard,
-        _         => return, // Poison pill!
+        _ => return, // Poison pill!
     };
 
     match parsed_content {
@@ -1043,11 +980,11 @@ fn parse_file(
             guard.result.defines.append(&mut statements.defines);
             guard.result.file_paths.push((path_str, path));
             guard.result.strings.push((file_id, strings));
-        },
+        }
         Err(error) => {
             guard.result.errors.push(error);
             guard.result.file_paths.push((path_str, path));
-        },
+        }
     }
     guard.running_parsers -= 1;
     cvar.notify_all();
