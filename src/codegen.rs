@@ -11,11 +11,14 @@ use crate::memory::*;
 use crate::parser::*;
 use crate::util::logical_cpu_count;
 
+// Represents an instruction in both ASM and Op Codes (WIP)
+type Inst = (String, Vec<u8>);
+
 struct CodeGenPool {
     running_fibers: usize,
     functions: Vec<RSFunction>,
     // Function name -> instructions
-    results: Vec<(String, Vec<String>)>,
+    results: Vec<(String, Vec<Inst>)>,
     errors: Vec<CompErr>,
 }
 
@@ -99,7 +102,7 @@ fn label_for_string_id(file_id: usize, string_index: usize) -> String {
  */
 fn prepass_gen(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     body: &Statement,
     offset: i64,
 ) -> Result<(), CompErr> {
@@ -157,23 +160,75 @@ fn prepass_gen(
     }
 
     if autos_size > 0 {
-        instructions.push(format!("subq ${}, %rsp", 8 * autos_size));
+        let immediate = 8 * autos_size;
+        let mut opcodes = vec![0x48, 0x81, 0xec];
+        append_le32_bytes(&mut opcodes, immediate);
+        instructions.push((format!("subq ${}, %rsp", immediate), opcodes));
     }
 
     Ok(())
 }
 
+fn append_le32_bytes(
+    vector: &mut Vec<u8>,
+    value: i64,
+) {
+    assert!(value <= i32::MAX as i64 && value >= i32::MIN as i64);
+    vector.push((value & 0xff) as u8);
+    vector.push(((value >> 8) & 0xff) as u8);
+    vector.push(((value >> 16) & 0xff) as u8);
+    vector.push(((value >> 24) & 0xff) as u8);
+}
+
+fn opcode_gen_push(
+    loc: &Loc,
+) -> Inst {
+    match loc {
+        Loc::Stack(position) => {
+            let offset = position * 8;
+
+            let mut opcodes = vec![0xff];
+            if offset >= i8::MIN as i64 && offset <= i8::MAX as i64 {
+                opcodes.push(0x75);
+                opcodes.push((offset & 0xff) as u8);
+            } else {
+                opcodes.push(0xb5);
+                append_le32_bytes(&mut opcodes, offset);
+            }
+            (format!("pushq {}", loc), opcodes)
+        },
+        Loc::Data(_) => todo!(),
+        Loc::Register(reg) => {
+            let opcodes = if reg.is_ext() {
+                vec![0x41, 0x50 + reg.opcode_id()]
+            } else {
+                vec![0x50 + reg.opcode_id()]
+            };
+            (format!("pushq %{}", reg), opcodes)
+        },
+        // 68 78 56 34 12          push   $0x12345678
+        Loc::Immediate(value) => {
+            if *value > u32::MAX as i64 || *value < u32::MIN as i64 {
+                todo!("We don't support pushing 64 bit ints yet")
+            }
+            let mut opcodes = vec![0x68];
+            append_le32_bytes(&mut opcodes, *value);
+            (format!("pushq {}", loc), opcodes)
+        },
+    }
+}
+
 // Allocates the necessary args on the stack
 fn alloc_args(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     pos: &Pos,
     args: &[String],
 ) -> Result<(), CompErr> {
     for (i, arg) in args.iter().enumerate() {
         let loc = if i < 6 {
             let register = Reg::for_arg_num(i);
-            instructions.push(format!("pushq %{}", register));
+            instructions.push(opcode_gen_push(&Loc::Register(register)));
             Loc::Stack(-(i as i64) - 1)
         } else {
             Loc::Stack((i as i64) - 4)
@@ -186,16 +241,16 @@ fn alloc_args(
 }
 
 fn gen_op_cmp(
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     command: &str,
     lhs_loc: Loc,
     rhs_loc: Loc,
 ) -> (Loc, RegSet) {
-    instructions.push(format!("cmpq {},{}", rhs_loc, lhs_loc));
-    instructions.push(format!("movq $0,{}", lhs_loc));
+    instructions.push((format!("cmpq {},{}", rhs_loc, lhs_loc), vec![]));
+    instructions.push((format!("movq $0,{}", lhs_loc), vec![]));
 
     if let Loc::Register(lhs_reg) = lhs_loc {
-        instructions.push(format!("{} %{}", command, lhs_reg.low_byte()));
+        instructions.push((format!("{} %{}", command, lhs_reg.low_byte()), vec![]));
     } else {
         panic!("LHS must be a register");
     }
@@ -204,17 +259,17 @@ fn gen_op_cmp(
 }
 
 fn gen_op_single(
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     command: &str,
     lhs_loc: Loc,
     rhs_loc: Loc,
 ) -> (Loc, RegSet) {
-    instructions.push(format!("{} {},{}", command, rhs_loc, lhs_loc));
+    instructions.push((format!("{} {},{}", command, rhs_loc, lhs_loc), vec![]));
     (lhs_loc, RegSet::empty())
 }
 
 fn gen_op_shift(
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     command: &str,
     lhs_loc: Loc,
     rhs_loc: Loc,
@@ -223,8 +278,8 @@ fn gen_op_shift(
         rhs_loc @ Loc::Immediate(_) => gen_op_single(instructions, command, lhs_loc, rhs_loc),
         _ => {
             // Required to use %cl register for non immediates during shifts
-            instructions.push(format!("movq {},%rcx", rhs_loc));
-            instructions.push(format!("{} %cl,{}", command, lhs_loc));
+            instructions.push((format!("movq {},%rcx", rhs_loc), vec![]));
+            instructions.push((format!("{} %cl,{}", command, lhs_loc), vec![]));
             let used_registers = RegSet::of(Reg::Rcx);
             (lhs_loc, used_registers)
         }
@@ -236,7 +291,7 @@ fn gen_op_shift(
  * @return (instructions, rhs_loc, used_registers)
  */
 fn gen_op_pre_float_op(
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     lhs_loc: Loc,
     init_rhs_loc: Loc,
 ) -> (Loc, RegSet) {
@@ -257,7 +312,7 @@ fn gen_op_pre_float_op(
         };
 
         used_registers = used_registers.with(dest_reg);
-        instructions.push(format!("movq {},%{}", init_rhs_loc, dest_reg));
+        instructions.push((format!("movq {},%{}", init_rhs_loc, dest_reg), vec![]));
 
         Loc::Register(dest_reg)
     } else {
@@ -266,7 +321,7 @@ fn gen_op_pre_float_op(
 
     match lhs_loc {
         Loc::Register(Reg::Rax) => {}
-        lhs_loc => instructions.push(format!("movq {},%rax", lhs_loc)),
+        lhs_loc => instructions.push((format!("movq {},%rax", lhs_loc), vec![])),
     };
 
     (rhs_loc, used_registers)
@@ -276,28 +331,28 @@ fn gen_op_pre_float_op(
  * Generate instructions to diving (or mod) two numbers
  * As per x86 idivq, the results always go to rax and rdx
  */
-fn gen_op_pre_div(instructions: &mut Vec<String>, lhs_loc: Loc, init_rhs_loc: Loc) -> RegSet {
+fn gen_op_pre_div(instructions: &mut Vec<Inst>, lhs_loc: Loc, init_rhs_loc: Loc) -> RegSet {
     let (rhs_loc, used_registers) = gen_op_pre_float_op(instructions, lhs_loc, init_rhs_loc);
 
-    instructions.push("movq $0,%rdx".to_string());
-    instructions.push(format!("idivq {}", rhs_loc));
+    instructions.push(("movq $0,%rdx".to_string(), vec![]));
+    instructions.push((format!("idivq {}", rhs_loc), vec![]));
 
     used_registers
 }
 
-fn gen_op_mod(instructions: &mut Vec<String>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
+fn gen_op_mod(instructions: &mut Vec<Inst>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
     let used_registers = gen_op_pre_div(instructions, lhs_loc, rhs_loc);
     (Loc::Register(Reg::Rdx), used_registers)
 }
 
-fn gen_op_div(instructions: &mut Vec<String>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
+fn gen_op_div(instructions: &mut Vec<Inst>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
     let used_registers = gen_op_pre_div(instructions, lhs_loc, rhs_loc);
     (Loc::Register(Reg::Rax), used_registers)
 }
 
-fn gen_op_mul(instructions: &mut Vec<String>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
+fn gen_op_mul(instructions: &mut Vec<Inst>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
     let (rhs_loc, used_registers) = gen_op_pre_float_op(instructions, lhs_loc, rhs_loc);
-    instructions.push(format!("imulq {}", rhs_loc));
+    instructions.push((format!("imulq {}", rhs_loc), vec![]));
     (Loc::Register(Reg::Rax), used_registers)
 }
 
@@ -308,7 +363,7 @@ fn gen_op_mul(instructions: &mut Vec<String>, lhs_loc: Loc, rhs_loc: Loc) -> (Lo
  * @return (instructions, dest_loc, extra_registers)
  */
 fn gen_op_command(
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     op: &BinOp,
     lhs_loc: Loc,
     rhs_loc: Loc,
@@ -362,7 +417,7 @@ fn get_safe_registers(used_registers: RegSet) -> RegSet {
 /// * `unsafe_registers` - Registers which should be avoided
 fn gen_pre_op(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     lhs: &Expr,
     rhs: &Expr,
     unsafe_registers: RegSet,
@@ -388,7 +443,7 @@ fn gen_pre_op(
         // If there are safe registers available, store the lhs there
         Some(dest_reg) => {
             used_registers = used_registers.with(dest_reg);
-            instructions.push(format!("movq {},%{}", lhs_loc, dest_reg));
+            instructions.push((format!("movq {},%{}", lhs_loc, dest_reg), vec![]));
             instructions.append(&mut rhs_ins);
             Loc::Register(dest_reg)
         }
@@ -397,7 +452,7 @@ fn gen_pre_op(
             let lhs_in_reg = matches!(lhs_loc, Loc::Register(_));
 
             if lhs_in_reg {
-                instructions.push(format!("pushq {}", lhs_loc));
+                instructions.push(opcode_gen_push(&lhs_loc));
             }
 
             instructions.append(&mut rhs_ins);
@@ -410,9 +465,9 @@ fn gen_pre_op(
             };
 
             if lhs_in_reg {
-                instructions.push(format!("popq {}", new_lhs_loc));
+                instructions.push((format!("popq {}", new_lhs_loc), vec![]));
             } else {
-                instructions.push(format!("movq {},{}", lhs_loc, new_lhs_loc));
+                instructions.push((format!("movq {},{}", lhs_loc, new_lhs_loc), vec![]));
             }
             new_lhs_loc
         }
@@ -423,7 +478,7 @@ fn gen_pre_op(
 
 fn gen_prep_unary_op_incdec(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
     let (expr_loc, used_registers) = gen_expr(c, instructions, expr)?;
@@ -442,18 +497,18 @@ fn gen_prep_unary_op_incdec(
 
 fn gen_unary_op_pre_incdec(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     op_name: &str,
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
     let (expr_loc, used_registers) = gen_prep_unary_op_incdec(c, instructions, expr)?;
-    instructions.push(format!("{} {}", op_name, expr_loc));
+    instructions.push((format!("{} {}", op_name, expr_loc), vec![]));
     Ok((expr_loc, used_registers))
 }
 
 fn gen_unary_op_post_incdec(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     op_name: &str,
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
@@ -463,14 +518,14 @@ fn gen_unary_op_post_incdec(
     let dest_reg = Reg::R11;
     let dest_loc = Loc::Register(dest_reg);
 
-    instructions.push(format!("movq {},{}", expr_loc, dest_loc));
-    instructions.push(format!("{} {}", op_name, expr_loc));
+    instructions.push((format!("movq {},{}", expr_loc, dest_loc), vec![]));
+    instructions.push((format!("{} {}", op_name, expr_loc), vec![]));
     Ok((dest_loc, used_registers.with(dest_reg)))
 }
 
 fn gen_unary_op_non_assign(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     asm_op: &str,
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
@@ -485,17 +540,17 @@ fn gen_unary_op_non_assign(
                     Reg::Rax
                 }
             };
-            instructions.push(format!("movq {},%{}", expr_loc, dest_reg));
+            instructions.push((format!("movq {},%{}", expr_loc, dest_reg), vec![]));
             dest_reg
         }
     };
-    instructions.push(format!("{} %{}", asm_op, dest_reg));
+    instructions.push((format!("{} %{}", asm_op, dest_reg), vec![]));
     Ok((Loc::Register(dest_reg), used_registers))
 }
 
 fn gen_unary_op(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     op: &UnaryOp,
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
@@ -511,7 +566,7 @@ fn gen_unary_op(
 
 fn gen_bin_op(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     op: &BinOp,
     lhs: &Expr,
     rhs: &Expr,
@@ -527,7 +582,7 @@ fn gen_bin_op(
 
 fn gen_syscall(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     pos: &Pos,
     params: &Vec<Expr>,
 ) -> Result<(Loc, RegSet), CompErr> {
@@ -542,17 +597,17 @@ fn gen_syscall(
 
         // TODO: Optimize better, quit monkeying around
         // No point pushing memory or immediate locations to the stack!
-        instructions.push(format!("pushq {}", param_loc));
+        instructions.push(opcode_gen_push(&param_loc));
 
         used_registers = used_registers.union(param_used_reg);
     }
 
     for i in 0..params.len() {
         let reg = Reg::for_syscall_arg_num(i);
-        instructions.push(format!("popq %{}", reg));
+        instructions.push((format!("popq %{}", reg), vec![]));
     }
 
-    instructions.push("syscall".to_string());
+    instructions.push(("syscall".to_string(), vec![0x0f, 0x05]));
 
     Ok((Loc::Register(Reg::Rax), used_registers))
 }
@@ -560,7 +615,7 @@ fn gen_syscall(
 // Returns the first 6 param locations
 fn gen_call_params(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     params: &Vec<Expr>,
 ) -> Result<Vec<Loc>, CompErr> {
     // Evaluate backwards until the 7th var.
@@ -568,7 +623,7 @@ fn gen_call_params(
     for i in (6..params.len()).rev() {
         let param = &params[i];
         let (param_loc, _) = gen_expr(c, instructions, param)?;
-        instructions.push(format!("pushq {}", param_loc));
+        instructions.push(opcode_gen_push(&param_loc));
     }
 
     let mut param_locs = vec![];
@@ -577,7 +632,7 @@ fn gen_call_params(
         let (param_loc, _) = gen_expr(c, instructions, param)?;
 
         if param_loc.is_reg() {
-            instructions.push(format!("pushq {}", param_loc));
+            instructions.push(opcode_gen_push(&param_loc));
         }
         param_locs.push(param_loc);
     }
@@ -650,7 +705,7 @@ fn substitute_id(body: &Expr, substitutions: &HashMap<String, Expr>) -> Result<E
 
 fn gen_call_macro(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     pos: &Pos,
     body: Expr,
     args: Vec<String>,
@@ -673,7 +728,7 @@ fn gen_call_macro(
 
 fn gen_call(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     pos: &Pos,
     callee_expr: &Expr,
     params: &Vec<Expr>,
@@ -699,7 +754,7 @@ fn gen_call(
                 name
             }
             Some(ScopeEntry::Var(loc)) => {
-                instructions.push(format!("movq {},%rax", loc));
+                instructions.push((format!("movq {},%rax", loc), vec![]));
                 "*%rax"
             }
             Some(ScopeEntry::Define(args, body)) => {
@@ -713,7 +768,7 @@ fn gen_call(
         callee_expr => {
             let (callee_loc, _) = gen_expr(c, instructions, callee_expr)?;
             if callee_loc != Loc::Register(Reg::Rax) {
-                instructions.push(format!("movq {},%rax", callee_loc));
+                instructions.push((format!("movq {},%rax", callee_loc), vec![]));
             }
             "*%rax"
         }
@@ -724,17 +779,17 @@ fn gen_call(
         let param_loc = &param_locs[i];
 
         if param_loc.is_reg() {
-            instructions.push(format!("popq %{}", reg));
+            instructions.push((format!("popq %{}", reg), vec![]));
         } else {
-            instructions.push(format!("movq {},%{}", param_loc, reg));
+            instructions.push((format!("movq {},%{}", param_loc, reg), vec![]));
         }
     }
 
-    instructions.push(format!("call {}", callee));
+    instructions.push((format!("call {}", callee), vec![]));
 
     if params.len() > 6 {
         let stack_arg_count = params.len() - 6;
-        instructions.push(format!("addq ${}, %rsp", 8 * stack_arg_count));
+        instructions.push((format!("addq ${}, %rsp", 8 * stack_arg_count), vec![]));
     }
 
     // Assume we used all the registers, since we're calling an unknown function
@@ -743,14 +798,14 @@ fn gen_call(
 
 fn gen_reference(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     pos: &Pos,
     name: &String,
 ) -> Result<(Loc, RegSet), CompErr> {
     match c.find_in_scope(name) {
         Some(ScopeEntry::Var(Loc::Stack(offset))) => {
             let dest_reg = Reg::Rax;
-            instructions.push(format!("leaq {}(%rbp),%{}", 8 * offset, dest_reg));
+            instructions.push((format!("leaq {}(%rbp),%{}", 8 * offset, dest_reg), vec![]));
             Ok((Loc::Register(dest_reg), RegSet::of(dest_reg)))
         }
         Some(ScopeEntry::Var(other)) => {
@@ -758,7 +813,7 @@ fn gen_reference(
         }
         Some(ScopeEntry::Fun(_)) => {
             let dest_reg = Reg::Rax;
-            instructions.push(format!("movq ${},%rax", name));
+            instructions.push((format!("movq ${},%rax", name), vec![]));
             Ok((Loc::Register(dest_reg), RegSet::of(dest_reg)))
         }
         Some(ScopeEntry::Define(_, _)) => {
@@ -770,7 +825,7 @@ fn gen_reference(
 
 fn gen_dereference(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
     let (target_loc, mut used_registers) = gen_expr(c, instructions, expr)?;
@@ -786,19 +841,19 @@ fn gen_dereference(
                     Reg::Rax
                 }
             };
-            instructions.push(format!("movq {},%{}", target_loc, new_reg));
+            instructions.push((format!("movq {},%{}", target_loc, new_reg), vec![]));
             new_reg
         }
     };
 
-    instructions.push(format!("movq (%{}),%{}", dest_reg, dest_reg));
+    instructions.push((format!("movq (%{}),%{}", dest_reg, dest_reg), vec![]));
     Ok((Loc::Register(dest_reg), used_registers))
 }
 
 // Generates the RHS instructions for an assignment
 fn gen_expr_ass_rhs(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     rhs: &Expr,
 ) -> Result<(Reg, RegSet), CompErr> {
     let (rhs_loc, mut used_registers) = gen_expr(c, instructions, rhs)?;
@@ -816,7 +871,7 @@ fn gen_expr_ass_rhs(
                 }
             };
 
-            instructions.push(format!("movq {},%{}", rhs_loc, rhs_reg));
+            instructions.push((format!("movq {},%{}", rhs_loc, rhs_reg), vec![]));
             Ok((rhs_reg, used_registers))
         }
     }
@@ -824,7 +879,7 @@ fn gen_expr_ass_rhs(
 
 fn gen_expr_ass(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     pos: &Pos,
     lhs_name: &String,
     rhs: &Expr,
@@ -833,7 +888,7 @@ fn gen_expr_ass(
 
     match c.find_in_scope(lhs_name) {
         Some(ScopeEntry::Var(lhs_loc)) => {
-            instructions.push(format!("movq %{},{}", rhs_reg, lhs_loc));
+            instructions.push((format!("movq %{},{}", rhs_reg, lhs_loc), vec![]));
             Ok((lhs_loc.clone(), used_registers))
         }
         Some(ScopeEntry::Fun(_)) => CompErr::err(pos, "Cannot reassign a function".to_string()),
@@ -848,7 +903,7 @@ fn gen_expr_ass(
 // Abstract away!
 fn gen_expr_deref_ass(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     lhs: &Expr,
     rhs: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
@@ -861,14 +916,14 @@ fn gen_expr_deref_ass(
         Some(safe_reg) => match lhs_loc {
             Loc::Register(lhs_reg) if safe_registers.contains(lhs_reg) => Some(lhs_reg),
             lhs_loc => {
-                instructions.push(format!("movq {},%{}", lhs_loc, safe_reg));
+                instructions.push((format!("movq {},%{}", lhs_loc, safe_reg), vec![]));
                 used_registers = used_registers.with(safe_reg);
                 Some(safe_reg)
             }
         },
         None => {
             // No safe registers! Push to stack!
-            instructions.push(format!("pushq {}", lhs_loc));
+            instructions.push(opcode_gen_push(&lhs_loc));
             None
         }
     };
@@ -885,7 +940,7 @@ fn gen_expr_deref_ass(
                 Reg::Rax => Reg::Rcx,
                 _ => Reg::Rax,
             };
-            instructions.push(format!("popq %{}", dest_reg));
+            instructions.push((format!("popq %{}", dest_reg), vec![]));
             dest_reg
         }
     };
@@ -895,14 +950,14 @@ fn gen_expr_deref_ass(
     // - The lhs address is at dest_reg
     // - The rhs value is at rhs_reg
 
-    instructions.push(format!("movq %{},(%{})", rhs_reg, dest_reg));
+    instructions.push((format!("movq %{},(%{})", rhs_reg, dest_reg), vec![]));
 
     Ok((Loc::Register(rhs_reg), used_registers))
 }
 
 /// # Arguments
 /// * `dest_reg` - For values > 2^32, this is the reg that will be used.
-fn gen_int(instructions: &mut Vec<String>, signed: i64, dest_reg: Reg) -> (Loc, RegSet) {
+fn gen_int(instructions: &mut Vec<Inst>, signed: i64, dest_reg: Reg) -> (Loc, RegSet) {
     if signed < i32::MAX as i64 && signed >= i32::MIN as i64 {
         (Loc::Immediate(signed), RegSet::empty())
     } else {
@@ -911,9 +966,9 @@ fn gen_int(instructions: &mut Vec<String>, signed: i64, dest_reg: Reg) -> (Loc, 
         let lower = unsigned & ((1 << 32) - 1);
 
         // Since immediates can only be 32 bit ints at most
-        instructions.push(format!("movq ${},%{}", upper, dest_reg));
-        instructions.push(format!("shlq $32,%{}", dest_reg));
-        instructions.push(format!("addq ${},%{}", lower, dest_reg));
+        instructions.push((format!("movq ${},%{}", upper, dest_reg), vec![]));
+        instructions.push((format!("shlq $32,%{}", dest_reg), vec![]));
+        instructions.push((format!("addq ${},%{}", lower, dest_reg), vec![]));
 
         (Loc::Register(dest_reg), RegSet::of(dest_reg))
     }
@@ -921,7 +976,7 @@ fn gen_int(instructions: &mut Vec<String>, signed: i64, dest_reg: Reg) -> (Loc, 
 
 fn gen_cond_expr(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     cond_expr: &Expr,
     true_expr: &Expr,
     false_expr: &Expr,
@@ -938,17 +993,17 @@ fn gen_cond_expr(
     let (true_loc, true_used) = gen_expr(c, instructions, true_expr)?;
     used_registers = used_registers.union(true_used);
     if true_loc != dest_loc {
-        instructions.push(format!("movq {},{}", true_loc, dest_loc));
+        instructions.push((format!("movq {},{}", true_loc, dest_loc), vec![]));
     }
-    instructions.push(format!("jmp {}", false_end_label));
-    instructions.push(format!("{}:", true_end_label));
+    instructions.push((format!("jmp {}", false_end_label), vec![]));
+    instructions.push((format!("{}:", true_end_label), vec![]));
 
     let (false_loc, false_used) = gen_expr(c, instructions, false_expr)?;
     used_registers = used_registers.union(false_used);
     if false_loc != dest_loc {
-        instructions.push(format!("movq {},{}", false_loc, dest_loc));
+        instructions.push((format!("movq {},{}", false_loc, dest_loc), vec![]));
     }
-    instructions.push(format!("{}:", false_end_label));
+    instructions.push((format!("{}:", false_end_label), vec![]));
 
     Ok((dest_loc, used_registers))
 }
@@ -958,7 +1013,7 @@ fn gen_cond_expr(
  */
 fn gen_expr(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
     match expr {
@@ -984,7 +1039,7 @@ fn gen_expr(
         },
         Expr::Str(_, (file_id, string_index)) => {
             let label = label_for_string_id(*file_id, *string_index);
-            instructions.push(format!("leaq {}(%rip),%rax", label));
+            instructions.push((format!("leaq {}(%rip),%rax", label), vec![]));
             Ok((Loc::Register(Reg::Rax), RegSet::of(Reg::Rax)))
         }
         Expr::Assignment(pos, lhs, rhs) => gen_expr_ass(c, instructions, pos, lhs, rhs),
@@ -1002,44 +1057,44 @@ fn gen_expr(
 
 fn gen_return_expr(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     expr: &Expr,
 ) -> Result<(), CompErr> {
     let (loc, _) = gen_expr(c, instructions, expr)?;
 
     // If the location is already rax, we don't need to move!
     if loc != Loc::Register(Reg::Rax) {
-        instructions.push(format!("movq {},%rax", loc));
+        instructions.push((format!("movq {},%rax", loc), vec![]));
     }
 
-    instructions.push("leave".to_string());
-    instructions.push("ret".to_string());
+    instructions.push(("leave".to_string(), vec![0xc9]));
+    instructions.push(("ret".to_string(), vec![0xc3]));
     Ok(())
 }
 
-fn gen_return(instructions: &mut Vec<String>) {
-    instructions.push("movq $0,%rax".to_string());
-    instructions.push("leave".to_string());
-    instructions.push("ret".to_string());
+fn gen_return(instructions: &mut Vec<Inst>) {
+    instructions.push(("movq $0,%rax".to_string(), vec![0x48, 0xc7, 0xc0, 0, 0, 0, 0]));
+    instructions.push(("leave".to_string(), vec![0xc9]));
+    instructions.push(("ret".to_string(), vec![0xc3]));
 }
 
 fn gen_cond_cmp(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     jump_command: &str,
     lhs: &Expr,
     rhs: &Expr,
     end_label: &String,
 ) -> Result<(), CompErr> {
     let (lhs_loc, rhs_loc, _) = gen_pre_op(c, instructions, lhs, rhs, RegSet::empty())?;
-    instructions.push(format!("cmpq {},{}", rhs_loc, lhs_loc));
-    instructions.push(format!("{} {}", jump_command, end_label));
+    instructions.push((format!("cmpq {},{}", rhs_loc, lhs_loc), vec![]));
+    instructions.push((format!("{} {}", jump_command, end_label), vec![]));
     Ok(())
 }
 
 fn gen_cond(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     cond: &Expr,
     end_label: &String,
 ) -> Result<(), CompErr> {
@@ -1064,7 +1119,7 @@ fn gen_cond(
         }
         Expr::Int(_, value) => {
             if *value == 0 {
-                instructions.push(format!("jmp {}", end_label));
+                instructions.push((format!("jmp {}", end_label), vec![]));
                 Ok(())
             } else {
                 // For non-zero ints, no comparison needs to be made!
@@ -1074,8 +1129,8 @@ fn gen_cond(
         _ => {
             // Fallback to evaluating the entire conditional expression
             let (cond_loc, _) = gen_expr(c, instructions, cond)?;
-            instructions.push(format!("cmpq $0,{}", cond_loc));
-            instructions.push(format!("jz {}", end_label));
+            instructions.push((format!("cmpq $0,{}", cond_loc), vec![]));
+            instructions.push((format!("jz {}", end_label), vec![]));
             Ok(())
         }
     }
@@ -1083,33 +1138,33 @@ fn gen_cond(
 
 fn gen_if(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     cond: &Expr,
     if_body: &Statement,
 ) -> Result<(), CompErr> {
     let if_end_label = c.new_label("IF_END");
     gen_cond(c, instructions, cond, &if_end_label)?;
     gen_statement(c, instructions, if_body)?;
-    instructions.push(format!("{}:", if_end_label));
+    instructions.push((format!("{}:", if_end_label), vec![]));
     Ok(())
 }
 
 fn gen_while(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     cond: &Expr,
     body: &Statement,
 ) -> Result<(), CompErr> {
     let while_begin_label = c.new_label("WHILE_BEGIN");
-    instructions.push(format!("{}:", while_begin_label));
+    instructions.push((format!("{}:", while_begin_label), vec![]));
     let while_end_label = c.new_label("WHILE_END");
 
     c.break_dest_stack.push(while_end_label.clone());
 
     gen_cond(c, instructions, cond, &while_end_label)?;
     gen_statement(c, instructions, body)?;
-    instructions.push(format!("jmp {}", while_begin_label));
-    instructions.push(format!("{}:", while_end_label));
+    instructions.push((format!("jmp {}", while_begin_label), vec![]));
+    instructions.push((format!("{}:", while_end_label), vec![]));
 
     c.break_dest_stack.pop();
     Ok(())
@@ -1117,7 +1172,7 @@ fn gen_while(
 
 fn gen_if_else(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     cond: &Expr,
     if_body: &Statement,
     else_body: &Statement,
@@ -1127,16 +1182,16 @@ fn gen_if_else(
 
     gen_cond(c, instructions, cond, &if_end_label)?;
     gen_statement(c, instructions, if_body)?;
-    instructions.push(format!("jmp {}", else_end_label));
-    instructions.push(format!("{}:", if_end_label));
+    instructions.push((format!("jmp {}", else_end_label), vec![]));
+    instructions.push((format!("{}:", if_end_label), vec![]));
     gen_statement(c, instructions, else_body)?;
-    instructions.push(format!("{}:", else_end_label));
+    instructions.push((format!("{}:", else_end_label), vec![]));
     Ok(())
 }
 
 fn gen_switch(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     cond: &Expr,
     body: &Vec<SwInner>,
 ) -> Result<(), CompErr> {
@@ -1145,7 +1200,7 @@ fn gen_switch(
     let cond_loc = match expr_loc {
         loc @ Loc::Register(_) => loc,
         other => {
-            instructions.push(format!("movq {},%rax", other));
+            instructions.push((format!("movq {},%rax", other), vec![]));
             Loc::Register(Reg::Rax)
         }
     };
@@ -1173,7 +1228,7 @@ fn gen_switch(
                     );
                 }
                 let label_name = c.new_label("SW_DEFAULT");
-                body_inst.push(format!("{}:", label_name));
+                body_inst.push((format!("{}:", label_name), vec![]));
                 default_label = Some(label_name);
             }
             SwInner::Case(pos, value) => {
@@ -1187,9 +1242,9 @@ fn gen_switch(
 
                 let (case_loc, _) = gen_int(&mut body_inst, *value, case_reg);
                 let label_name = c.new_label("SW_CASE");
-                body_inst.push(format!("{}:", label_name));
-                instructions.push(format!("cmpq {},{}", case_loc, cond_loc));
-                instructions.push(format!("je {}", label_name));
+                body_inst.push((format!("{}:", label_name), vec![]));
+                instructions.push((format!("cmpq {},{}", case_loc, cond_loc), vec![]));
+                instructions.push((format!("je {}", label_name), vec![]));
             }
             SwInner::Statement(body) => gen_statement(c, &mut body_inst, body)?,
         }
@@ -1202,15 +1257,15 @@ fn gen_switch(
     };
 
     // Default jump point
-    instructions.push(inst);
+    instructions.push((inst, vec![]));
     instructions.append(&mut body_inst);
-    instructions.push(format!("{}:", switch_end_label));
+    instructions.push((format!("{}:", switch_end_label), vec![]));
     Ok(())
 }
 
 fn gen_auto(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     pos: &Pos,
     vars: &Vec<Var>,
 ) -> Result<(), CompErr> {
@@ -1228,19 +1283,19 @@ fn gen_auto(
                 };
 
                 // The first value in the stack for a vector is a data pointer
-                instructions.push(format!("leaq {}(%rbp),%rax", (offset - size) * 8));
-                instructions.push(format!("movq %rax,{}", dest_loc));
+                instructions.push((format!("leaq {}(%rbp),%rax", (offset - size) * 8), vec![]));
+                instructions.push((format!("movq %rax,{}", dest_loc), vec![]));
 
                 for (i, value) in initial.iter().enumerate() {
                     let val_dest_loc = Loc::Stack(offset - size + i as i64);
 
                     let (val_loc, _) = gen_int(instructions, *value, Reg::Rax);
-                    instructions.push(format!("movq {},{}", val_loc, val_dest_loc));
+                    instructions.push((format!("movq {},{}", val_loc, val_dest_loc), vec![]));
                 }
             }
             Var::Single(_, Some(value)) => {
                 let (val_loc, _) = gen_int(instructions, *value, Reg::Rax);
-                instructions.push(format!("movq {},{}", val_loc, dest_loc));
+                instructions.push((format!("movq {},{}", val_loc, dest_loc), vec![]));
             }
             Var::Single(_, None) => {}
         }
@@ -1270,23 +1325,23 @@ fn gen_extern(c: &mut FunContext, pos: &Pos, vars: &Vec<String>) -> Result<(), C
 
 fn gen_statement(
     c: &mut FunContext,
-    instructions: &mut Vec<String>,
+    instructions: &mut Vec<Inst>,
     body: &Statement,
 ) -> Result<(), CompErr> {
     match body {
         Statement::Null => Ok(()),
         Statement::Break(pos) => match c.break_dest_stack.last() {
             Some(label) => {
-                instructions.push("# break".to_string());
-                instructions.push(format!("jmp {}", label));
+                instructions.push(("# break".to_string(), vec![]));
+                instructions.push((format!("jmp {}", label), vec![]));
                 Ok(())
             }
             None => CompErr::err(pos, "Cannot break from this location".to_string()),
         },
         Statement::Goto(pos, name) => match c.labels.get(name) {
             Some(label) => {
-                instructions.push(format!("# goto {}", label));
-                instructions.push(format!("jmp {}", label));
+                instructions.push((format!("# goto {}", label), vec![]));
+                instructions.push((format!("jmp {}", label), vec![]));
                 Ok(())
             }
             None => CompErr::err(
@@ -1296,16 +1351,16 @@ fn gen_statement(
         },
         // We preprocess the labels, so we know it must exist
         Statement::Label(_, name) => {
-            instructions.push(format!("{}:", c.labels.get(name).unwrap()));
+            instructions.push((format!("{}:", c.labels.get(name).unwrap()), vec![]));
             Ok(())
         }
         Statement::Return => {
-            instructions.push("# return".to_string());
+            instructions.push(("# return".to_string(), vec![]));
             gen_return(instructions);
             Ok(())
         }
         Statement::ReturnExpr(expr) => {
-            instructions.push("# return".to_string());
+            instructions.push(("# return".to_string(), vec![]));
             gen_return_expr(c, instructions, expr)
         }
         Statement::Block(statements) => {
@@ -1317,38 +1372,38 @@ fn gen_statement(
             Ok(())
         }
         Statement::Auto(pos, vars) => {
-            instructions.push("# auto".to_string());
+            instructions.push(("# auto".to_string(), vec![]));
             gen_auto(c, instructions, pos, vars)
         }
         Statement::Extern(pos, vars) => {
-            instructions.push("# extrn".to_string());
+            instructions.push(("# extrn".to_string(), vec![]));
             gen_extern(c, pos, vars)
         }
         Statement::Expr(expr) => {
-            instructions.push("# Expression statement".to_string());
+            instructions.push(("# Expression statement".to_string(), vec![]));
             gen_expr(c, instructions, expr)?;
             Ok(())
         }
         Statement::If(cond, if_body, None) => {
-            instructions.push("# if".to_string());
+            instructions.push(("# if".to_string(), vec![]));
             gen_if(c, instructions, cond, if_body)
         }
         Statement::If(cond, if_body, Some(else_body)) => {
-            instructions.push("# if".to_string());
+            instructions.push(("# if".to_string(), vec![]));
             gen_if_else(c, instructions, cond, if_body, else_body)
         }
         Statement::While(cond, body) => {
-            instructions.push("# while".to_string());
+            instructions.push(("# while".to_string(), vec![]));
             gen_while(c, instructions, cond, body)
         }
         Statement::Switch(cond, body) => {
-            instructions.push("# switch".to_string());
+            instructions.push(("# switch".to_string(), vec![]));
             gen_switch(c, instructions, cond, body)
         }
     }
 }
 
-fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Vec<String>, CompErr> {
+fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Vec<Inst>, CompErr> {
     let pos = &function.pos;
     let args = &function.args;
     let body = &function.body;
@@ -1356,8 +1411,8 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Vec<String>, Com
     c.new_scope();
     let mut instructions = vec![];
     // Save base pointer, since it's callee-saved
-    instructions.push("pushq %rbp".to_string());
-    instructions.push("movq %rsp,%rbp".to_string());
+    instructions.push(opcode_gen_push(&Loc::Register(Reg::Rbp)));
+    instructions.push(("movq %rsp,%rbp".to_string(), vec![0x48, 0x89, 0xe5]));
 
     // Prepare initial stack memory
     alloc_args(c, &mut instructions, pos, args)?;
@@ -1371,7 +1426,7 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Vec<String>, Com
     gen_statement(c, &mut instructions, body)?;
 
     let trailing_ret = match instructions.last() {
-        Some(instruction) => instruction == "ret",
+        Some(instruction) => instruction.0 == "ret",
         _ => false,
     };
 
@@ -1549,7 +1604,15 @@ fn gen(
     while let Some((func_name, instructions)) = pop_pool_result(&pool) {
         CompErr::from_io_res(writeln!(w, "{}:", func_name))?;
         for instruction in instructions {
-            CompErr::from_io_res(writeln!(w, "    {}", instruction))?;
+            // For debugging, write the opcode equivalent when available
+            if instruction.1.len() > 0 {
+                let bytes = instruction.1.iter().map(|byte| {
+                    format!("{:#04x}", byte)
+                }).collect::<Vec<_>>().join(",");
+                CompErr::from_io_res(writeln!(w, "    .byte {} # {}", bytes, instruction.0))?;
+            } else {
+                CompErr::from_io_res(writeln!(w, "    {}", instruction.0))?;
+            }
         }
     }
 
@@ -1568,13 +1631,13 @@ fn gen(
     for (func_name, instructions) in guard_iter {
         CompErr::from_io_res(writeln!(w, "{}:", func_name))?;
         for instruction in instructions {
-            CompErr::from_io_res(writeln!(w, "    {}", instruction))?;
+            CompErr::from_io_res(writeln!(w, "    {}", instruction.0))?;
         }
     }
     Ok(())
 }
 
-fn pop_pool_result(pool: &Arc<(Mutex<CodeGenPool>, Condvar)>) -> Option<(String, Vec<String>)> {
+fn pop_pool_result(pool: &Arc<(Mutex<CodeGenPool>, Condvar)>) -> Option<(String, Vec<Inst>)> {
     let (mutex, cvar) = pool.as_ref();
     let mut guard = mutex.lock().unwrap();
 

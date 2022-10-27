@@ -22,6 +22,53 @@ pub enum Reg {
 }
 
 impl Reg {
+    /// References:
+    /// * http://ref.x86asm.net/coder64.html
+    pub fn opcode_id(&self) -> u8 {
+        match self {
+            Reg::Rax => 0,
+            Reg::Rbx => 3,
+            Reg::Rcx => 1,
+            Reg::Rdx => 2,
+            Reg::Rdi => 7,
+            Reg::Rsi => 6,
+            Reg::Rbp => 5,
+            Reg::Rsp => 4,
+            // These are "extended" registers, be sure to check is_ext!
+            Reg::R8  => 0,
+            Reg::R9  => 1,
+            Reg::R10 => 2,
+            Reg::R11 => 3,
+            Reg::R12 => 4,
+            Reg::R13 => 5,
+            Reg::R14 => 6,
+            Reg::R15 => 7,
+        }
+    }
+
+    /// Is this register an extended register?
+    /// Extended registers often have different opcodes!
+    pub fn is_ext(&self) -> bool {
+        match self {
+            Reg::Rax => false,
+            Reg::Rbx => false,
+            Reg::Rcx => false,
+            Reg::Rdx => false,
+            Reg::Rdi => false,
+            Reg::Rsi => false,
+            Reg::Rbp => false,
+            Reg::Rsp => false,
+            Reg::R8  => true,
+            Reg::R9  => true,
+            Reg::R10 => true,
+            Reg::R11 => true,
+            Reg::R12 => true,
+            Reg::R13 => true,
+            Reg::R14 => true,
+            Reg::R15 => true,
+        }
+    }
+
     pub fn low_byte(&self) -> &str {
         match self {
             Reg::Rax => "al",
