@@ -99,6 +99,10 @@ fn is_32_bounded(value: i64) -> bool {
     value < i32::MAX as i64 && value >= i32::MIN as i64
 }
 
+fn is_8_bounded(value: i64) -> bool {
+    value < i8::MAX as i64 && value >= i8::MIN as i64
+}
+
 /**
  * Allocates stack memory for auto local_var_locs and finds labels.
  * @param body The function body to search for auto declarations
@@ -289,6 +293,28 @@ fn opcode_gen_mov(
 
             (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
         },
+        (Loc::Stack(lhs_index), Loc::Register(rhs_reg)) => {
+            let mut opcodes = vec![match rhs_reg.is_ext() {
+                true  => 0x4c,
+                false => 0x48,
+            }];
+            opcodes.push(0x8b);
+
+            let lhs_offset = lhs_index * 8;
+            if is_8_bounded(lhs_offset) {
+                opcodes.push(0x45 + (rhs_reg.opcode_id() << 3));
+                opcodes.push((lhs_offset & 0xff) as u8);
+            } else {
+                opcodes.push(0x85 + (rhs_reg.opcode_id() << 3));
+                append_le32_bytes(&mut opcodes, lhs_offset);
+            }
+            (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
+        },
+        (Loc::Stack(_), Loc::Stack(_)) => unreachable!(),
+        // Last one before we hit the Loc::Data snag
+        // (Loc::Register(lhs_reg), Loc::Stack(rhs_index)) => {
+        //     todo!()
+        // },
         _ => (format!("movq {},{}", lhs_loc, rhs_loc), vec![])
     }
 }
