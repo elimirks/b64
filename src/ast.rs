@@ -206,7 +206,8 @@ impl BinOp {
     pub fn is_comparison(&self) -> bool {
         matches!(
             self,
-            BinOp::Eq | BinOp::Ne | BinOp::Le | BinOp::Ge | BinOp::Lt | BinOp::Gt
+            BinOp::Eq | BinOp::Ne | BinOp::Le | BinOp::Ge | BinOp::Lt |
+            BinOp::Gt
         )
     }
 }

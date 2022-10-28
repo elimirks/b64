@@ -495,6 +495,62 @@ fn opcode_gen_op_cmp(
     (format!("comparison op to %{}", reg.low_byte()), opcodes)
 }
 
+/// Remember: dest,src
+fn opcode_gen_arithmetic(
+    op: &BinOp,
+    command: &str,
+    lhs_loc: &Loc,
+    rhs_loc: &Loc,
+) -> Inst {
+    match (lhs_loc, rhs_loc) {
+        (Loc::Immediate(lhs_value), Loc::Register(rhs_reg)) => {
+            // NOTE: For 32 bit values, rax has a 1-byte-shorter opcode
+            // But for simplicity, I didn't use it here
+            let mut opcodes = vec![match rhs_reg.is_ext() {
+                true  => 0x49,
+                false => 0x48,
+            }];
+            let arithmetic_base = match op {
+                BinOp::Add => 0xc0,
+                BinOp::Sub => 0xe8,
+                BinOp::And => 0xe0,
+                BinOp::Or  => 0xc8,
+                BinOp::Xor => 0xf0,
+                _ => panic!("{:?} is not a basic arithmetic op", op)
+            };
+            if is_8_bounded(*lhs_value) {
+                opcodes.push(0x83);
+                opcodes.push(arithmetic_base + rhs_reg.opcode_id());
+                opcodes.push((lhs_value & 0xff) as u8);
+            } else {
+                opcodes.push(0x81);
+                opcodes.push(arithmetic_base + rhs_reg.opcode_id());
+                append_le32_bytes(&mut opcodes, *lhs_value);
+            }
+            (format!("{} {},{}", command, lhs_loc, rhs_loc), opcodes)
+        },
+        (Loc::Register(lhs_reg), Loc::Register(rhs_reg)) => {
+            let mut opcodes = vec![match (lhs_reg.is_ext(), rhs_reg.is_ext()) {
+                (true, true)   => 0x4d,
+                (true, false)  => 0x4c,
+                (false, true)  => 0x49,
+                (false, false) => 0x48,
+            }];
+            opcodes.push(match op {
+                BinOp::Add => 0x01,
+                BinOp::Sub => 0x29,
+                BinOp::And => 0x21,
+                BinOp::Or  => 0x09,
+                BinOp::Xor => 0x31,
+                _ => panic!("{:?} is not a basic arithmetic op", op)
+            });
+            opcodes.push(0xc0 + (lhs_reg.opcode_id() << 3) + rhs_reg.opcode_id());
+            (format!("{} {},{}", command, lhs_loc, rhs_loc), opcodes)
+        },
+        _ => (format!("{} {},{}", command, lhs_loc, rhs_loc), vec![]),
+    }
+}
+
 fn gen_op_cmp(
     instructions: &mut Vec<Inst>,
     op: &BinOp,
@@ -516,21 +572,26 @@ fn gen_op_cmp(
 fn gen_op_single(
     instructions: &mut Vec<Inst>,
     command: &str,
+    op: &BinOp,
     lhs_loc: Loc,
     rhs_loc: Loc,
 ) -> (Loc, RegSet) {
-    instructions.push((format!("{} {},{}", command, rhs_loc, lhs_loc), vec![]));
+    instructions.push(opcode_gen_arithmetic(op, command, &rhs_loc, &lhs_loc));
     (lhs_loc, RegSet::empty())
 }
 
 fn gen_op_shift(
     instructions: &mut Vec<Inst>,
     command: &str,
+    op: &BinOp,
     lhs_loc: Loc,
     rhs_loc: Loc,
 ) -> (Loc, RegSet) {
     match rhs_loc {
-        rhs_loc @ Loc::Immediate(_) => gen_op_single(instructions, command, lhs_loc, rhs_loc),
+        rhs_loc @ Loc::Immediate(_) => {
+            instructions.push((format!("{} {},{}", command, rhs_loc, lhs_loc), vec![]));
+            (lhs_loc, RegSet::empty())
+        },
         _ => {
             // Required to use %cl register for non immediates during shifts
             instructions.push(opcode_gen_mov(&rhs_loc, &Reg::Rcx.into()));
@@ -622,16 +683,16 @@ fn gen_op_command(
     rhs_loc: Loc,
 ) -> (Loc, RegSet) {
     match op {
-        BinOp::Add => gen_op_single(instructions, "addq", lhs_loc, rhs_loc),
-        BinOp::Sub => gen_op_single(instructions, "subq", lhs_loc, rhs_loc),
+        BinOp::Add => gen_op_single(instructions, "addq", op, lhs_loc, rhs_loc),
+        BinOp::Sub => gen_op_single(instructions, "subq", op, lhs_loc, rhs_loc),
         BinOp::Mod => gen_op_mod(instructions, lhs_loc, rhs_loc),
         BinOp::Div => gen_op_div(instructions, lhs_loc, rhs_loc),
         BinOp::Mul => gen_op_mul(instructions, lhs_loc, rhs_loc),
-        BinOp::ShiftRight => gen_op_shift(instructions, "shrq", lhs_loc, rhs_loc),
-        BinOp::ShiftLeft => gen_op_shift(instructions, "shlq", lhs_loc, rhs_loc),
-        BinOp::And => gen_op_single(instructions, "andq", lhs_loc, rhs_loc),
-        BinOp::Or => gen_op_single(instructions, "orq", lhs_loc, rhs_loc),
-        BinOp::Xor => gen_op_single(instructions, "xorq", lhs_loc, rhs_loc),
+        BinOp::ShiftRight => gen_op_shift(instructions, "shrq", op, lhs_loc, rhs_loc),
+        BinOp::ShiftLeft => gen_op_shift(instructions, "shlq", op, lhs_loc, rhs_loc),
+        BinOp::And => gen_op_single(instructions, "andq", op, lhs_loc, rhs_loc),
+        BinOp::Or => gen_op_single(instructions, "orq", op, lhs_loc, rhs_loc),
+        BinOp::Xor => gen_op_single(instructions, "xorq", op, lhs_loc, rhs_loc),
         BinOp::Eq => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
         BinOp::Ne => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
         BinOp::Le => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
@@ -1042,7 +1103,8 @@ fn gen_call(
 
     if params.len() > 6 {
         let stack_arg_count = params.len() - 6;
-        instructions.push((format!("addq ${}, %rsp", 8 * stack_arg_count), vec![]));
+        let stack_arg_imm = 8 * stack_arg_count as i64;
+        instructions.push(opcode_gen_arithmetic(&BinOp::Add, "addq", &stack_arg_imm.into(), &Reg::Rsp.into()));
     }
 
     // Assume we used all the registers, since we're calling an unknown function
@@ -1230,7 +1292,7 @@ fn gen_int(instructions: &mut Vec<Inst>, signed: i64, dest_reg: Reg) -> (Loc, Re
             _        => Reg::Rax,
         };
         instructions.push(opcode_gen_mov(&lower.into(), &tmp_reg.into()));
-        instructions.push((format!("addq %{},%{}", tmp_reg, dest_reg), vec![]));
+        instructions.push(opcode_gen_arithmetic(&BinOp::Add, "addq", &tmp_reg.into(), &dest_reg.into()));
 
         (Loc::Register(dest_reg), RegSet::of(dest_reg).with(tmp_reg))
     }
