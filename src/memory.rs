@@ -70,6 +70,8 @@ impl Reg {
         }
     }
 
+    /// Get the extended low byte for this register
+    /// IMPORTANT: It returns the RAX for the low byte
     pub fn low_byte(&self) -> &str {
         match self {
             Reg::Rax => "al",

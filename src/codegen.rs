@@ -259,6 +259,48 @@ fn opcode_gen_pop(
     }
 }
 
+/// NOTE: You probably want to flip the order of rhs and lhs when calling this
+fn opcode_gen_cmp(
+    lhs_loc: &Loc,
+    rhs_loc: &Loc,
+) -> Inst {
+    match (lhs_loc, rhs_loc) {
+        (lhs, rhs) if lhs.is_mem() && rhs.is_mem() => unreachable!(),
+        (Loc::Register(lhs_reg), Loc::Register(rhs_reg)) => {
+            let mut opcodes = vec![match (lhs_reg.is_ext(), rhs_reg.is_ext()) {
+                (true, true)   => 0x4d,
+                (true, false)  => 0x4c,
+                (false, true)  => 0x49,
+                (false, false) => 0x48,
+            }];
+            opcodes.push(0x39);
+            opcodes.push(0xc0 + (lhs_reg.opcode_id() << 3) + rhs_reg.opcode_id());
+            (format!("cmpq {},{}", lhs_loc, rhs_loc), opcodes)
+        },
+        (Loc::Stack(lhs_index), Loc::Register(rhs_reg)) => {
+            let mut opcodes = vec![match rhs_reg.is_ext() {
+                true  => 0x4c,
+                false => 0x48,
+            }];
+            opcodes.push(0x3b);
+
+            let lhs_offset = lhs_index * 8;
+            if is_8_bounded(lhs_offset) {
+                opcodes.push(0x45 + (rhs_reg.opcode_id() << 3));
+                opcodes.push((lhs_offset & 0xff) as u8);
+            } else {
+                opcodes.push(0x85 + (rhs_reg.opcode_id() << 3));
+                append_le32_bytes(&mut opcodes, lhs_offset);
+            }
+            (format!("cmpq {},{}", lhs_loc, rhs_loc), opcodes)
+        },
+        (Loc::Register(_), Loc::Stack(_)) => {
+            panic!("cmpq rhs should never be on the stack")
+        },
+        _ => (format!("cmpq {},{}", lhs_loc, rhs_loc), vec![]),
+    }
+}
+
 fn opcode_gen_mov(
     lhs_loc: &Loc,
     rhs_loc: &Loc,
@@ -370,6 +412,39 @@ fn opcode_gen_op_mul(
     }
 }
 
+fn opcode_gen_op_div(
+    loc: &Loc,
+) -> Inst {
+    match loc {
+        Loc::Stack(index) => {
+            let mut opcodes = vec![0x48, 0xf7];
+            let offset = index * 8;
+
+            if is_8_bounded(offset) {
+                opcodes.push(0x7d);
+                opcodes.push((offset & 0xff) as u8);
+            } else {
+                opcodes.push(0xbd);
+                append_le32_bytes(&mut opcodes, offset);
+            }
+            (format!("idivq {}", loc), opcodes)
+        },
+        Loc::Register(reg) => {
+            let mut opcodes = vec![match reg.is_ext() {
+                true  => 0x49,
+                false => 0x48,
+            }];
+            opcodes.push(0xf7);
+            opcodes.push(0xf8 + reg.opcode_id());
+            (format!("idivq {}", loc), opcodes)
+        },
+        Loc::Data(_) => {
+            (format!("imulq {}", loc), vec![])
+        },
+        Loc::Immediate(_) => unreachable!(),
+    }
+}
+
 // Allocates the necessary args on the stack
 fn alloc_args(
     c: &mut FunContext,
@@ -392,17 +467,45 @@ fn alloc_args(
     Ok(())
 }
 
+fn opcode_gen_op_cmp(
+    op: &BinOp,
+    reg: Reg
+) -> Inst {
+    let mut opcodes = vec![];
+    match reg {
+        // The set* opcodes use RAX mode.
+        // However, these 4 registers don't need to engage it for some reason.
+        Reg::Rax | Reg::Rbx | Reg::Rcx | Reg::Rdx => {},
+        reg if reg.is_ext() => {
+            opcodes.push(0x41);
+        },
+        _ => opcodes.push(0x40)
+    }
+    opcodes.push(0x0f);
+    opcodes.push(match op {
+        BinOp::Eq => 0x94,
+        BinOp::Ne => 0x95,
+        BinOp::Le => 0x9e,
+        BinOp::Lt => 0x9c,
+        BinOp::Ge => 0x9d,
+        BinOp::Gt => 0x9f,
+        _ => panic!("{:?} is not a comparison operator", op),
+    });
+    opcodes.push(0xc0 + reg.opcode_id());
+    (format!("comparison op to %{}", reg.low_byte()), opcodes)
+}
+
 fn gen_op_cmp(
     instructions: &mut Vec<Inst>,
-    command: &str,
+    op: &BinOp,
     lhs_loc: Loc,
     rhs_loc: Loc,
 ) -> (Loc, RegSet) {
-    instructions.push((format!("cmpq {},{}", rhs_loc, lhs_loc), vec![]));
+    instructions.push(opcode_gen_cmp(&rhs_loc, &lhs_loc));
     instructions.push(opcode_gen_mov(&Loc::Immediate(0), &lhs_loc));
 
     if let Loc::Register(lhs_reg) = lhs_loc {
-        instructions.push((format!("{} %{}", command, lhs_reg.low_byte()), vec![]));
+        instructions.push(opcode_gen_op_cmp(op, lhs_reg));
     } else {
         panic!("LHS must be a register");
     }
@@ -485,10 +588,8 @@ fn gen_op_pre_float_op(
  */
 fn gen_op_pre_div(instructions: &mut Vec<Inst>, lhs_loc: Loc, init_rhs_loc: Loc) -> RegSet {
     let (rhs_loc, used_registers) = gen_op_pre_float_op(instructions, lhs_loc, init_rhs_loc);
-
     instructions.push(opcode_gen_mov(&0.into(), &Reg::Rdx.into()));
-    instructions.push((format!("idivq {}", rhs_loc), vec![]));
-
+    instructions.push(opcode_gen_op_div(&rhs_loc));
     used_registers
 }
 
@@ -531,12 +632,12 @@ fn gen_op_command(
         BinOp::And => gen_op_single(instructions, "andq", lhs_loc, rhs_loc),
         BinOp::Or => gen_op_single(instructions, "orq", lhs_loc, rhs_loc),
         BinOp::Xor => gen_op_single(instructions, "xorq", lhs_loc, rhs_loc),
-        BinOp::Eq => gen_op_cmp(instructions, "sete", lhs_loc, rhs_loc),
-        BinOp::Ne => gen_op_cmp(instructions, "setne", lhs_loc, rhs_loc),
-        BinOp::Le => gen_op_cmp(instructions, "setle", lhs_loc, rhs_loc),
-        BinOp::Lt => gen_op_cmp(instructions, "setl", lhs_loc, rhs_loc),
-        BinOp::Ge => gen_op_cmp(instructions, "setge", lhs_loc, rhs_loc),
-        BinOp::Gt => gen_op_cmp(instructions, "setg", lhs_loc, rhs_loc),
+        BinOp::Eq => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
+        BinOp::Ne => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
+        BinOp::Le => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
+        BinOp::Lt => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
+        BinOp::Ge => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
+        BinOp::Gt => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
         BinOp::Assign(_) => panic!("Assignments should not be parsed as regular binop exprs"),
     }
 }
@@ -1248,7 +1349,7 @@ fn gen_cond_cmp(
     end_label: &String,
 ) -> Result<(), CompErr> {
     let (lhs_loc, rhs_loc, _) = gen_pre_op(c, instructions, lhs, rhs, RegSet::empty())?;
-    instructions.push((format!("cmpq {},{}", rhs_loc, lhs_loc), vec![]));
+    instructions.push(opcode_gen_cmp(&rhs_loc, &lhs_loc));
     instructions.push((format!("{} {}", jump_command, end_label), vec![]));
     Ok(())
 }
@@ -1290,7 +1391,7 @@ fn gen_cond(
         _ => {
             // Fallback to evaluating the entire conditional expression
             let (cond_loc, _) = gen_expr(c, instructions, cond)?;
-            instructions.push((format!("cmpq $0,{}", cond_loc), vec![]));
+            instructions.push(opcode_gen_cmp(&0.into(), &cond_loc));
             instructions.push((format!("jz {}", end_label), vec![]));
             Ok(())
         }
@@ -1404,7 +1505,7 @@ fn gen_switch(
                 let (case_loc, _) = gen_int(&mut body_inst, *value, case_reg);
                 let label_name = c.new_label("SW_CASE");
                 body_inst.push((format!("{}:", label_name), vec![]));
-                instructions.push((format!("cmpq {},{}", case_loc, cond_loc), vec![]));
+                instructions.push(opcode_gen_cmp(&case_loc, &cond_loc));
                 instructions.push((format!("je {}", label_name), vec![]));
             }
             SwInner::Statement(body) => gen_statement(c, &mut body_inst, body)?,
