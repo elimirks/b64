@@ -264,7 +264,6 @@ fn opcode_gen_mov(
     rhs_loc: &Loc,
 ) -> Inst {
     match (lhs_loc, rhs_loc) {
-        (_, Loc::Immediate(_)) => unreachable!(),
         (Loc::Immediate(imm), Loc::Register(rhs)) => {
             let mut opcodes = vec![match rhs.is_ext() {
                 true  => 0x49,
@@ -310,11 +309,30 @@ fn opcode_gen_mov(
             }
             (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
         },
+        // FIXME: This can probably be cleaned up a bit.
+        //        It shares most code with the above match case.
+        (Loc::Register(lhs_reg), Loc::Stack(rhs_index)) => {
+            let mut opcodes = vec![match lhs_reg.is_ext() {
+                true  => 0x4c,
+                false => 0x48,
+            }];
+            opcodes.push(0x89);
+
+            let rhs_offset = rhs_index * 8;
+            if is_8_bounded(rhs_offset) {
+                opcodes.push(0x45 + (lhs_reg.opcode_id() << 3));
+                opcodes.push((rhs_offset & 0xff) as u8);
+            } else {
+                opcodes.push(0x85 + (lhs_reg.opcode_id() << 3));
+                append_le32_bytes(&mut opcodes, rhs_offset);
+            }
+            (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
+        },
+        (_, Loc::Immediate(_))         => unreachable!(),
         (Loc::Stack(_), Loc::Stack(_)) => unreachable!(),
-        // Last one before we hit the Loc::Data snag
-        // (Loc::Register(lhs_reg), Loc::Stack(rhs_index)) => {
-        //     todo!()
-        // },
+        (Loc::Data(_), Loc::Stack(_))  => unreachable!(),
+        (Loc::Stack(_), Loc::Data(_))  => unreachable!(),
+        (Loc::Data(_), Loc::Data(_))   => unreachable!(),
         _ => (format!("movq {},{}", lhs_loc, rhs_loc), vec![])
     }
 }
