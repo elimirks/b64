@@ -277,7 +277,7 @@ fn opcode_gen_mov(
                 opcodes.push(0xb8 + rhs.opcode_id());
                 append_le64_bytes(&mut opcodes, *imm);
             }
-            (format!("movq {},{}", lhs_loc, rhs_loc), vec![])
+            (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
         },
         (Loc::Register(lhs), Loc::Register(rhs)) => {
             let mut opcodes = vec![match (lhs.is_ext(), rhs.is_ext()) {
@@ -334,6 +334,39 @@ fn opcode_gen_mov(
         (Loc::Stack(_), Loc::Data(_))  => unreachable!(),
         (Loc::Data(_), Loc::Data(_))   => unreachable!(),
         _ => (format!("movq {},{}", lhs_loc, rhs_loc), vec![])
+    }
+}
+
+fn opcode_gen_op_mul(
+    loc: &Loc,
+) -> Inst {
+    match loc {
+        Loc::Stack(index) => {
+            let mut opcodes = vec![0x48, 0xf7];
+            let offset = index * 8;
+
+            if is_8_bounded(offset) {
+                opcodes.push(0x6d);
+                opcodes.push((offset & 0xff) as u8);
+            } else {
+                opcodes.push(0xad);
+                append_le32_bytes(&mut opcodes, offset);
+            }
+            (format!("imulq {}", loc), opcodes)
+        },
+        Loc::Register(reg) => {
+            let mut opcodes = vec![match reg.is_ext() {
+                true  => 0x49,
+                false => 0x48,
+            }];
+            opcodes.push(0xf7);
+            opcodes.push(0xe8 + reg.opcode_id());
+            (format!("imulq {}", loc), opcodes)
+        },
+        Loc::Data(_) => {
+            (format!("imulq {}", loc), vec![])
+        },
+        Loc::Immediate(_) => unreachable!(),
     }
 }
 
@@ -471,7 +504,7 @@ fn gen_op_div(instructions: &mut Vec<Inst>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc,
 
 fn gen_op_mul(instructions: &mut Vec<Inst>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
     let (rhs_loc, used_registers) = gen_op_pre_float_op(instructions, lhs_loc, rhs_loc);
-    instructions.push((format!("imulq {}", rhs_loc), vec![]));
+    instructions.push(opcode_gen_op_mul(&rhs_loc));
     (Loc::Register(Reg::Rax), used_registers)
 }
 
@@ -1087,9 +1120,18 @@ fn gen_int(instructions: &mut Vec<Inst>, signed: i64, dest_reg: Reg) -> (Loc, Re
         // Since immediates can only be 32 bit ints at most
         instructions.push(opcode_gen_mov(&upper.into(), &dest_reg.into()));
         instructions.push((format!("shlq $32,%{}", dest_reg), vec![]));
-        instructions.push((format!("addq ${},%{}", lower, dest_reg), vec![]));
 
-        (Loc::Register(dest_reg), RegSet::of(dest_reg))
+        // addq doesn't support large immediate values... I know, this is gnarly
+        // But really, such massive ints aren't that common.
+        // So suboptimal opcodes are ok I guess
+        let tmp_reg = match dest_reg {
+            Reg::Rax => Reg::Rcx,
+            _        => Reg::Rax,
+        };
+        instructions.push(opcode_gen_mov(&lower.into(), &tmp_reg.into()));
+        instructions.push((format!("addq %{},%{}", tmp_reg, dest_reg), vec![]));
+
+        (Loc::Register(dest_reg), RegSet::of(dest_reg).with(tmp_reg))
     }
 }
 

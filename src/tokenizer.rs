@@ -284,7 +284,9 @@ fn get_tok_int_decimal(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
         }
         value += x * significance;
 
-        significance *= 10;
+        if significance < 1000000000000000000 {
+            significance *= 10;
+        }
     }
     c.offset += current_word.len();
     Ok((pos, Token::Int(value)))
