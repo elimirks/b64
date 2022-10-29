@@ -171,7 +171,7 @@ fn prepass_gen(
         let immediate = 8 * autos_size;
         let mut opcodes = vec![0x48, 0x81, 0xec];
         append_le32_bytes(&mut opcodes, immediate);
-        instructions.push((format!("subq ${}, %rsp", immediate), opcodes));
+        instructions.push(opcode_gen_arithmetic(&BinOp::Sub, "subq", &immediate.into(), &Reg::Rsp.into()));
     }
 
     Ok(())
@@ -596,6 +596,26 @@ fn opcode_gen_arithmetic(
             opcodes.push(0xc0 + (lhs_reg.opcode_id() << 3) + rhs_reg.opcode_id());
             (format!("{} {},{}", command, lhs_loc, rhs_loc), opcodes)
         },
+        (Loc::Stack(lhs_index), Loc::Register(rhs_reg)) => {
+            let mut opcodes = vec![if rhs_reg.is_ext() { 0x4c } else { 0x48 }];
+            opcodes.push(match op {
+                BinOp::Add => 0x03,
+                BinOp::Sub => 0x2b,
+                BinOp::And => 0x23,
+                BinOp::Or  => 0x0b,
+                BinOp::Xor => 0x33,
+                _ => panic!("{:?} is not a basic arithmetic op", op)
+            });
+            let lhs_offset = lhs_index * 8;
+            if is_8_bounded(lhs_offset) {
+                opcodes.push(0x45 + (rhs_reg.opcode_id() << 3));
+                opcodes.push(lhs_offset as u8);
+            } else {
+                opcodes.push(0x85 + (rhs_reg.opcode_id() << 3));
+                append_le32_bytes(&mut opcodes, lhs_offset);
+            }
+            (format!("{} {},{}", command, lhs_loc, rhs_loc), opcodes)
+        },
         _ => (format!("{} {},{}", command, lhs_loc, rhs_loc), vec![]),
     }
 }
@@ -669,6 +689,24 @@ fn opcode_gen_incdec(
         },
         _ => (format!("{} {}", command, loc), vec![])
     }
+}
+
+fn opcode_gen_not(
+    reg: Reg
+) -> Inst {
+    let mut opcodes = vec![if reg.is_ext () { 0x49 } else { 0x48 }];
+    opcodes.push(0xf7);
+    opcodes.push(0xd0 + reg.opcode_id());
+    (format!("notq %{}", reg), opcodes)
+}
+
+fn opcode_gen_neg(
+    reg: Reg
+) -> Inst {
+    let mut opcodes = vec![if reg.is_ext () { 0x49 } else { 0x48 }];
+    opcodes.push(0xf7);
+    opcodes.push(0xd8 + reg.opcode_id());
+    (format!("negq %{}", reg), opcodes)
 }
 
 fn gen_op_cmp(
@@ -956,12 +994,12 @@ fn gen_unary_op_post_incdec(
     Ok((dest_loc, used_registers.with(dest_reg)))
 }
 
-fn gen_unary_op_non_assign(
+/// Returns the register to perform the operation on (the dest op)
+fn gen_unary_pre_op(
     c: &mut FunContext,
     instructions: &mut Vec<Inst>,
-    asm_op: &str,
     expr: &Expr,
-) -> Result<(Loc, RegSet), CompErr> {
+) -> Result<(Reg, RegSet), CompErr> {
     let (expr_loc, mut used_registers) = gen_expr(c, instructions, expr)?;
     let dest_reg = match expr_loc {
         Loc::Register(reg) => reg,
@@ -977,7 +1015,26 @@ fn gen_unary_op_non_assign(
             dest_reg
         }
     };
-    instructions.push((format!("{} %{}", asm_op, dest_reg), vec![]));
+    Ok((dest_reg, used_registers))
+}
+
+fn gen_unary_op_not(
+    c: &mut FunContext,
+    instructions: &mut Vec<Inst>,
+    expr: &Expr,
+) -> Result<(Loc, RegSet), CompErr> {
+    let (dest_reg, used_registers) = gen_unary_pre_op(c, instructions, expr)?;
+    instructions.push(opcode_gen_not(dest_reg));
+    Ok((Loc::Register(dest_reg), used_registers))
+}
+
+fn gen_unary_op_neg(
+    c: &mut FunContext,
+    instructions: &mut Vec<Inst>,
+    expr: &Expr,
+) -> Result<(Loc, RegSet), CompErr> {
+    let (dest_reg, used_registers) = gen_unary_pre_op(c, instructions, expr)?;
+    instructions.push(opcode_gen_neg(dest_reg));
     Ok((Loc::Register(dest_reg), used_registers))
 }
 
@@ -992,8 +1049,8 @@ fn gen_unary_op(
         UnaryOp::PreDecrement => gen_unary_op_pre_incdec(c, instructions, false, expr),
         UnaryOp::PostIncrement => gen_unary_op_post_incdec(c, instructions, true, expr),
         UnaryOp::PostDecrement => gen_unary_op_post_incdec(c, instructions, false, expr),
-        UnaryOp::BitNot => gen_unary_op_non_assign(c, instructions, "notq", expr),
-        UnaryOp::Negate => gen_unary_op_non_assign(c, instructions, "negq", expr),
+        UnaryOp::BitNot => gen_unary_op_not(c, instructions, expr),
+        UnaryOp::Negate => gen_unary_op_neg(c, instructions, expr),
     }
 }
 
@@ -1230,6 +1287,30 @@ fn gen_call(
     Ok((Loc::Register(Reg::Rax), RegSet::usable_caller_save()))
 }
 
+fn opcode_gen_lea(
+    src_loc: &Loc,
+    dst_reg: Reg,
+) -> Inst {
+    match src_loc {
+        Loc::Immediate(_) => panic!("No address for immediates"),
+        Loc::Register(_) => panic!("No address for registers"),
+        Loc::Stack(stack_index) => {
+            let mut opcodes = vec![if dst_reg.is_ext() { 0x4c } else { 0x48 }];
+            opcodes.push(0x8d);
+            let stack_offset = stack_index * 8;
+            if is_8_bounded(stack_offset) {
+                opcodes.push(0x45 + (dst_reg.opcode_id() << 3));
+                opcodes.push(stack_offset as u8);
+            } else {
+                opcodes.push(0x85 + (dst_reg.opcode_id() << 3));
+                append_le32_bytes(&mut opcodes, stack_offset);
+            }
+            (format!("leaq {},%{}", src_loc, dst_reg), opcodes)
+        },
+        _ => (format!("leaq {},%{}", src_loc, dst_reg), vec![])
+    }
+}
+
 fn gen_reference(
     c: &mut FunContext,
     instructions: &mut Vec<Inst>,
@@ -1237,10 +1318,10 @@ fn gen_reference(
     name: &String,
 ) -> Result<(Loc, RegSet), CompErr> {
     match c.find_in_scope(name) {
-        Some(ScopeEntry::Var(Loc::Stack(offset))) => {
+        Some(ScopeEntry::Var(src_loc @ Loc::Stack(_))) => {
             let dest_reg = Reg::Rax;
-            instructions.push((format!("leaq {}(%rbp),%{}", 8 * offset, dest_reg), vec![]));
-            Ok((Loc::Register(dest_reg), RegSet::of(dest_reg)))
+            instructions.push(opcode_gen_lea(src_loc, dest_reg));
+            Ok((dest_reg.into(), RegSet::of(dest_reg)))
         }
         Some(ScopeEntry::Var(other)) => {
             CompErr::err(pos, format!("Variable cannot be at {:?}!", other))
@@ -1726,7 +1807,7 @@ fn gen_auto(
                 };
 
                 // The first value in the stack for a vector is a data pointer
-                instructions.push((format!("leaq {}(%rbp),%rax", (offset - size) * 8), vec![]));
+                instructions.push(opcode_gen_lea(&Loc::Stack(offset - size), Reg::Rax));
                 instructions.push(opcode_gen_mov(&Reg::Rax.into(), &dest_loc));
 
                 for (i, value) in initial.iter().enumerate() {
