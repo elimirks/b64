@@ -237,6 +237,7 @@ fn opcode_gen_push(
             append_le32_bytes(&mut opcodes, *value);
             (format!("pushq {}", loc), opcodes)
         },
+        Loc::Indirect(_) => todo!(),
     }
 }
 
@@ -256,6 +257,7 @@ fn opcode_gen_pop(
             (format!("popq %{}", reg), opcodes)
         },
         Loc::Immediate(_) => unreachable!(),
+        Loc::Indirect(_) => todo!(),
     }
 }
 
@@ -419,11 +421,32 @@ fn opcode_gen_mov(
             }
             (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
         },
-        (_, Loc::Immediate(_))         => unreachable!(),
-        (Loc::Stack(_), Loc::Stack(_)) => unreachable!(),
-        (Loc::Data(_), Loc::Stack(_))  => unreachable!(),
-        (Loc::Stack(_), Loc::Data(_))  => unreachable!(),
-        (Loc::Data(_), Loc::Data(_))   => unreachable!(),
+        (_, Loc::Immediate(_)) => panic!("Can't move into an immediate"),
+        (rhs, lhs) if lhs.is_mem() && rhs.is_mem() =>
+            panic!("Can't move memory into memory"),
+        (Loc::Indirect(lhs_reg), Loc::Register(rhs_reg)) => {
+            let mut opcodes = vec![match (lhs_reg.is_ext(), rhs_reg.is_ext()) {
+                (true, true) => 0x4d,
+                (true, false) => 0x49,
+                (false, true) => 0x4c,
+                (false, false) => 0x48,
+            }];
+            opcodes.push(0x8b);
+            opcodes.push(lhs_reg.opcode_id() + (rhs_reg.opcode_id() << 3));
+            (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
+        },
+        (Loc::Register(lhs_reg), Loc::Indirect(rhs_reg)) => {
+            // TODO: Clean this up. I think I wrote the same match in many places
+            let mut opcodes = vec![match (lhs_reg.is_ext(), rhs_reg.is_ext()) {
+                (true, true) => 0x4d,
+                (true, false) => 0x49,
+                (false, true) => 0x4c,
+                (false, false) => 0x48,
+            }];
+            opcodes.push(0x89);
+            opcodes.push((lhs_reg.opcode_id() << 3) + rhs_reg.opcode_id());
+            (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
+        },
         _ => (format!("movq {},{}", lhs_loc, rhs_loc), vec![])
     }
 }
@@ -458,6 +481,7 @@ fn opcode_gen_op_mul(
             (format!("imulq {}", loc), vec![])
         },
         Loc::Immediate(_) => unreachable!(),
+        Loc::Indirect(_) => todo!(),
     }
 }
 
@@ -491,6 +515,7 @@ fn opcode_gen_op_div(
             (format!("imulq {}", loc), vec![])
         },
         Loc::Immediate(_) => unreachable!(),
+        Loc::Indirect(_) => todo!(),
     }
 }
 
@@ -1360,8 +1385,7 @@ fn gen_dereference(
             new_reg
         }
     };
-
-    instructions.push((format!("movq (%{}),%{}", dest_reg, dest_reg), vec![]));
+    instructions.push(opcode_gen_mov(&Loc::Indirect(dest_reg), &dest_reg.into()));
     Ok((Loc::Register(dest_reg), used_registers))
 }
 
@@ -1464,9 +1488,7 @@ fn gen_expr_deref_ass(
     // - instructions for both LHS and RHS are done
     // - The lhs address is at dest_reg
     // - The rhs value is at rhs_reg
-
-    instructions.push((format!("movq %{},(%{})", rhs_reg, dest_reg), vec![]));
-
+    instructions.push(opcode_gen_mov(&rhs_reg.into(), &Loc::Indirect(dest_reg)));
     Ok((Loc::Register(rhs_reg), used_registers))
 }
 

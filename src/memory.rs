@@ -261,6 +261,8 @@ pub enum Loc {
     Register(Reg),
     // "immediate" literal int values
     Immediate(i64),
+    // Indirect mode. For the form (%register)
+    Indirect(Reg),
 }
 
 impl Loc {
@@ -270,7 +272,7 @@ impl Loc {
 
     #[allow(dead_code)]
     pub fn is_mem(&self) -> bool {
-        matches!(self, Loc::Stack(_) | Loc::Data(_))
+        matches!(self, Loc::Stack(_) | Loc::Data(_) | Loc::Indirect(_))
     }
 }
 
@@ -281,6 +283,7 @@ impl fmt::Display for Loc {
             Loc::Register(reg) => write!(f, "%{}", reg),
             Loc::Immediate(value) => write!(f, "${}", value),
             Loc::Data(name) => write!(f, "{}(%rip)", name),
+            Loc::Indirect(reg) => write!(f, "(%{})", reg),
         }
     }
 }
