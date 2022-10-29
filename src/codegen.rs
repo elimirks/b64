@@ -182,24 +182,24 @@ fn append_le32_bytes(
     value: i64,
 ) {
     assert!(is_32_bounded(value));
-    vector.push(((value >> (8*0)) & 0xff) as u8);
-    vector.push(((value >> (8*1)) & 0xff) as u8);
-    vector.push(((value >> (8*2)) & 0xff) as u8);
-    vector.push(((value >> (8*3)) & 0xff) as u8);
+    vector.push((value >> (8*0)) as u8);
+    vector.push((value >> (8*1)) as u8);
+    vector.push((value >> (8*2)) as u8);
+    vector.push((value >> (8*3)) as u8);
 }
 
 fn append_le64_bytes(
     vector: &mut Vec<u8>,
     value: i64,
 ) {
-    vector.push(((value >> (8*0)) & 0xff) as u8);
-    vector.push(((value >> (8*1)) & 0xff) as u8);
-    vector.push(((value >> (8*2)) & 0xff) as u8);
-    vector.push(((value >> (8*3)) & 0xff) as u8);
-    vector.push(((value >> (8*4)) & 0xff) as u8);
-    vector.push(((value >> (8*5)) & 0xff) as u8);
-    vector.push(((value >> (8*6)) & 0xff) as u8);
-    vector.push(((value >> (8*7)) & 0xff) as u8);
+    vector.push((value >> (8*0)) as u8);
+    vector.push((value >> (8*1)) as u8);
+    vector.push((value >> (8*2)) as u8);
+    vector.push((value >> (8*3)) as u8);
+    vector.push((value >> (8*4)) as u8);
+    vector.push((value >> (8*5)) as u8);
+    vector.push((value >> (8*6)) as u8);
+    vector.push((value >> (8*7)) as u8);
 }
 
 fn opcode_gen_push(
@@ -212,7 +212,7 @@ fn opcode_gen_push(
             let mut opcodes = vec![0xff];
             if offset >= i8::MIN as i64 && offset <= i8::MAX as i64 {
                 opcodes.push(0x75);
-                opcodes.push((offset & 0xff) as u8);
+                opcodes.push(offset as u8);
             } else {
                 opcodes.push(0xb5);
                 append_le32_bytes(&mut opcodes, offset);
@@ -287,7 +287,7 @@ fn opcode_gen_cmp(
             let lhs_offset = lhs_index * 8;
             if is_8_bounded(lhs_offset) {
                 opcodes.push(0x45 + (rhs_reg.opcode_id() << 3));
-                opcodes.push((lhs_offset & 0xff) as u8);
+                opcodes.push(lhs_offset as u8);
             } else {
                 opcodes.push(0x85 + (rhs_reg.opcode_id() << 3));
                 append_le32_bytes(&mut opcodes, lhs_offset);
@@ -296,6 +296,42 @@ fn opcode_gen_cmp(
         },
         (Loc::Register(_), Loc::Stack(_)) => {
             panic!("cmpq rhs should never be on the stack")
+        },
+        (Loc::Immediate(lhs_value), Loc::Register(rhs_reg)) => {
+            let mut opcodes = vec![match rhs_reg.is_ext() {
+                true  => 0x49,
+                false => 0x48,
+            }];
+            if is_8_bounded(*lhs_value) {
+                opcodes.push(0x83);
+                opcodes.push(0xf8 + rhs_reg.opcode_id());
+                opcodes.push(*lhs_value as u8);
+            } else {
+                // NOTE: There is a special case for rax, but I ignored it
+                opcodes.push(0x81);
+                opcodes.push(0xf8 + rhs_reg.opcode_id());
+                append_le32_bytes(&mut opcodes, *lhs_value);
+            }
+            (format!("cmpq {},{}", lhs_loc, rhs_loc), opcodes)
+        },
+        (Loc::Immediate(lhs_value), Loc::Stack(rhs_index)) => {
+            let mut opcodes = vec![0x48];
+            let rhs_offset = rhs_index * 8;
+
+            opcodes.push(if is_8_bounded(*lhs_value) { 0x83 } else { 0x81 });
+            opcodes.push(if is_8_bounded(rhs_offset) { 0x7d } else { 0xbd });
+
+            if is_8_bounded(*lhs_value) {
+                opcodes.push(rhs_offset as u8);
+            } else {
+                append_le32_bytes(&mut opcodes, rhs_offset);
+            }
+            if is_8_bounded(rhs_offset) {
+                opcodes.push(*lhs_value as u8);
+            } else {
+                append_le32_bytes(&mut opcodes, *lhs_value);
+            }
+            (format!("cmpq {},{}", lhs_loc, rhs_loc), opcodes)
         },
         _ => (format!("cmpq {},{}", lhs_loc, rhs_loc), vec![]),
     }
@@ -344,7 +380,7 @@ fn opcode_gen_mov(
             let lhs_offset = lhs_index * 8;
             if is_8_bounded(lhs_offset) {
                 opcodes.push(0x45 + (rhs_reg.opcode_id() << 3));
-                opcodes.push((lhs_offset & 0xff) as u8);
+                opcodes.push(lhs_offset as u8);
             } else {
                 opcodes.push(0x85 + (rhs_reg.opcode_id() << 3));
                 append_le32_bytes(&mut opcodes, lhs_offset);
@@ -363,7 +399,7 @@ fn opcode_gen_mov(
             let rhs_offset = rhs_index * 8;
             if is_8_bounded(rhs_offset) {
                 opcodes.push(0x45 + (lhs_reg.opcode_id() << 3));
-                opcodes.push((rhs_offset & 0xff) as u8);
+                opcodes.push(rhs_offset as u8);
             } else {
                 opcodes.push(0x85 + (lhs_reg.opcode_id() << 3));
                 append_le32_bytes(&mut opcodes, rhs_offset);
@@ -389,7 +425,7 @@ fn opcode_gen_op_mul(
 
             if is_8_bounded(offset) {
                 opcodes.push(0x6d);
-                opcodes.push((offset & 0xff) as u8);
+                opcodes.push(offset as u8);
             } else {
                 opcodes.push(0xad);
                 append_le32_bytes(&mut opcodes, offset);
@@ -422,7 +458,7 @@ fn opcode_gen_op_div(
 
             if is_8_bounded(offset) {
                 opcodes.push(0x7d);
-                opcodes.push((offset & 0xff) as u8);
+                opcodes.push(offset as u8);
             } else {
                 opcodes.push(0xbd);
                 append_le32_bytes(&mut opcodes, offset);
@@ -521,7 +557,7 @@ fn opcode_gen_arithmetic(
             if is_8_bounded(*lhs_value) {
                 opcodes.push(0x83);
                 opcodes.push(arithmetic_base + rhs_reg.opcode_id());
-                opcodes.push((lhs_value & 0xff) as u8);
+                opcodes.push(*lhs_value as u8);
             } else {
                 opcodes.push(0x81);
                 opcodes.push(arithmetic_base + rhs_reg.opcode_id());
@@ -580,22 +616,59 @@ fn gen_op_single(
     (lhs_loc, RegSet::empty())
 }
 
+fn opcode_gen_immediate_shift(
+    is_left: bool,
+    loc: &Loc,
+    immediate_value: i64,
+) -> Inst {
+    let command = if is_left { "shlq" } else { "shrq" };
+    match loc {
+        Loc::Immediate(_) => panic!("Cannot shift into a literal"),
+        Loc::Register(reg) => {
+            let mut opcodes = vec![if reg.is_ext() { 0x49 } else { 0x48 }];
+            opcodes.push(0xc1);
+            let sh_opcode = if is_left { 0xe0 } else { 0xe8 };
+            opcodes.push(sh_opcode + reg.opcode_id());
+            opcodes.push(immediate_value as u8);
+            (format!("{} ${},{}", command, immediate_value, loc), opcodes)
+        },
+        _ => (format!("{} ${},{}", command, immediate_value, loc), vec![])
+    }
+}
+
+fn opcode_gen_cl_shift(
+    is_left: bool,
+    loc: &Loc
+) -> Inst {
+    let command = if is_left { "shlq" } else { "shrq" };
+
+    match loc {
+        Loc::Register(reg) => {
+            let mut opcodes = vec![if reg.is_ext() { 0x49 } else { 0x48 }];
+            opcodes.push(0xd3);
+            let sh_opcode = if is_left { 0xe0 } else { 0xe8 };
+            opcodes.push(sh_opcode + reg.opcode_id());
+            (format!("{} %cl,{}", command, loc), opcodes)
+        },
+        _ => (format!("{} %cl,{}", command, loc), vec![])
+    }
+}
+
 fn gen_op_shift(
     instructions: &mut Vec<Inst>,
-    command: &str,
-    op: &BinOp,
+    is_left: bool,
     lhs_loc: Loc,
     rhs_loc: Loc,
 ) -> (Loc, RegSet) {
     match rhs_loc {
-        rhs_loc @ Loc::Immediate(_) => {
-            instructions.push((format!("{} {},{}", command, rhs_loc, lhs_loc), vec![]));
+        Loc::Immediate(imm_value) => {
+            instructions.push(opcode_gen_immediate_shift(is_left, &lhs_loc, imm_value));
             (lhs_loc, RegSet::empty())
         },
         _ => {
             // Required to use %cl register for non immediates during shifts
             instructions.push(opcode_gen_mov(&rhs_loc, &Reg::Rcx.into()));
-            instructions.push((format!("{} %cl,{}", command, lhs_loc), vec![]));
+            instructions.push(opcode_gen_cl_shift(is_left, &lhs_loc));
             let used_registers = RegSet::of(Reg::Rcx);
             (lhs_loc, used_registers)
         }
@@ -688,8 +761,8 @@ fn gen_op_command(
         BinOp::Mod => gen_op_mod(instructions, lhs_loc, rhs_loc),
         BinOp::Div => gen_op_div(instructions, lhs_loc, rhs_loc),
         BinOp::Mul => gen_op_mul(instructions, lhs_loc, rhs_loc),
-        BinOp::ShiftRight => gen_op_shift(instructions, "shrq", op, lhs_loc, rhs_loc),
-        BinOp::ShiftLeft => gen_op_shift(instructions, "shlq", op, lhs_loc, rhs_loc),
+        BinOp::ShiftRight => gen_op_shift(instructions, false, lhs_loc, rhs_loc),
+        BinOp::ShiftLeft => gen_op_shift(instructions, true, lhs_loc, rhs_loc),
         BinOp::And => gen_op_single(instructions, "andq", op, lhs_loc, rhs_loc),
         BinOp::Or => gen_op_single(instructions, "orq", op, lhs_loc, rhs_loc),
         BinOp::Xor => gen_op_single(instructions, "xorq", op, lhs_loc, rhs_loc),
@@ -1282,7 +1355,7 @@ fn gen_int(instructions: &mut Vec<Inst>, signed: i64, dest_reg: Reg) -> (Loc, Re
 
         // Since immediates can only be 32 bit ints at most
         instructions.push(opcode_gen_mov(&upper.into(), &dest_reg.into()));
-        instructions.push((format!("shlq $32,%{}", dest_reg), vec![]));
+        instructions.push(opcode_gen_immediate_shift(true, &dest_reg.into(), 32));
 
         // addq doesn't support large immediate values... I know, this is gnarly
         // But really, such massive ints aren't that common.

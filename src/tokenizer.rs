@@ -285,6 +285,7 @@ fn get_tok_int_decimal(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
         value += x * significance;
 
         if significance < 1000000000000000000 {
+            // FIXME: This isn't quite correct actually
             significance *= 10;
         }
     }
