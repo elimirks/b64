@@ -357,6 +357,19 @@ fn opcode_gen_mov(
             }
             (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
         },
+        (Loc::Immediate(imm), Loc::Stack(stack_index)) => {
+            let mut opcodes = vec![0x48, 0xc7];
+            let stack_offset = stack_index * 8;
+            if is_8_bounded(stack_offset) {
+                opcodes.push(0x45);
+                opcodes.push(stack_offset as u8);
+            } else {
+                opcodes.push(0x85);
+                append_le32_bytes(&mut opcodes, stack_offset);
+            }
+            append_le32_bytes(&mut opcodes, *imm);
+            (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
+        },
         (Loc::Register(lhs), Loc::Register(rhs)) => {
             let mut opcodes = vec![match (lhs.is_ext(), rhs.is_ext()) {
                 (true, true)   => 0x4d,
@@ -587,35 +600,6 @@ fn opcode_gen_arithmetic(
     }
 }
 
-fn gen_op_cmp(
-    instructions: &mut Vec<Inst>,
-    op: &BinOp,
-    lhs_loc: Loc,
-    rhs_loc: Loc,
-) -> (Loc, RegSet) {
-    instructions.push(opcode_gen_cmp(&rhs_loc, &lhs_loc));
-    instructions.push(opcode_gen_mov(&Loc::Immediate(0), &lhs_loc));
-
-    if let Loc::Register(lhs_reg) = lhs_loc {
-        instructions.push(opcode_gen_op_cmp(op, lhs_reg));
-    } else {
-        panic!("LHS must be a register");
-    }
-
-    (lhs_loc, RegSet::empty())
-}
-
-fn gen_op_single(
-    instructions: &mut Vec<Inst>,
-    command: &str,
-    op: &BinOp,
-    lhs_loc: Loc,
-    rhs_loc: Loc,
-) -> (Loc, RegSet) {
-    instructions.push(opcode_gen_arithmetic(op, command, &rhs_loc, &lhs_loc));
-    (lhs_loc, RegSet::empty())
-}
-
 fn opcode_gen_immediate_shift(
     is_left: bool,
     loc: &Loc,
@@ -652,6 +636,68 @@ fn opcode_gen_cl_shift(
         },
         _ => (format!("{} %cl,{}", command, loc), vec![])
     }
+}
+
+fn opcode_gen_incdec(
+    is_inc: bool,
+    loc: &Loc
+) -> Inst {
+    let command = if is_inc { "incq" } else { "decq" };
+    match loc {
+        Loc::Register(reg) => {
+            let mut opcodes = vec![if reg.is_ext() { 0x49 } else { 0x48 }];
+            opcodes.push(0xff);
+            let cmd_opcode = if is_inc { 0xc0 } else { 0xc8 };
+            opcodes.push(cmd_opcode + reg.opcode_id());
+            (format!("{} {}", command, loc), opcodes)
+        },
+        Loc::Stack(stack_index) => {
+            let stack_offset = stack_index * 8;
+            let mut opcodes = vec![0x48, 0xff];
+            opcodes.push(match (is_8_bounded(stack_offset), is_inc) {
+                (true, true) => 0x45,
+                (true, false) => 0x4d,
+                (false, true) => 0x85,
+                (false, false) => 0x8d,
+            });
+            if is_8_bounded(stack_offset) {
+                opcodes.push(stack_offset as u8);
+            } else {
+                append_le64_bytes(&mut opcodes, stack_offset);
+            }
+            (format!("{} {}", command, loc), opcodes)
+        },
+        _ => (format!("{} {}", command, loc), vec![])
+    }
+}
+
+fn gen_op_cmp(
+    instructions: &mut Vec<Inst>,
+    op: &BinOp,
+    lhs_loc: Loc,
+    rhs_loc: Loc,
+) -> (Loc, RegSet) {
+    instructions.push(opcode_gen_cmp(&rhs_loc, &lhs_loc));
+    instructions.push(opcode_gen_mov(&Loc::Immediate(0), &lhs_loc));
+
+    if let Loc::Register(lhs_reg) = lhs_loc {
+        instructions.push(opcode_gen_op_cmp(op, lhs_reg));
+    } else {
+        panic!("LHS must be a register");
+    }
+
+    (lhs_loc, RegSet::empty())
+}
+
+fn gen_op_single(
+    instructions: &mut Vec<Inst>,
+    command: &str,
+    op: &BinOp,
+    lhs_loc: Loc,
+    rhs_loc: Loc,
+) -> (Loc, RegSet) {
+    instructions.push(opcode_gen_arithmetic(op, command, &rhs_loc, &lhs_loc));
+    (lhs_loc, RegSet::empty())
 }
 
 fn gen_op_shift(
@@ -885,18 +931,18 @@ fn gen_prep_unary_op_incdec(
 fn gen_unary_op_pre_incdec(
     c: &mut FunContext,
     instructions: &mut Vec<Inst>,
-    op_name: &str,
+    is_inc: bool,
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
     let (expr_loc, used_registers) = gen_prep_unary_op_incdec(c, instructions, expr)?;
-    instructions.push((format!("{} {}", op_name, expr_loc), vec![]));
+    instructions.push(opcode_gen_incdec(is_inc, &expr_loc));
     Ok((expr_loc, used_registers))
 }
 
 fn gen_unary_op_post_incdec(
     c: &mut FunContext,
     instructions: &mut Vec<Inst>,
-    op_name: &str,
+    is_inc: bool,
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
     let (expr_loc, used_registers) = gen_prep_unary_op_incdec(c, instructions, expr)?;
@@ -906,7 +952,7 @@ fn gen_unary_op_post_incdec(
     let dest_loc = Loc::Register(dest_reg);
 
     instructions.push(opcode_gen_mov(&expr_loc, &dest_loc));
-    instructions.push((format!("{} {}", op_name, expr_loc), vec![]));
+    instructions.push(opcode_gen_incdec(is_inc, &expr_loc));
     Ok((dest_loc, used_registers.with(dest_reg)))
 }
 
@@ -942,10 +988,10 @@ fn gen_unary_op(
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
     match op {
-        UnaryOp::PreIncrement => gen_unary_op_pre_incdec(c, instructions, "incq", expr),
-        UnaryOp::PreDecrement => gen_unary_op_pre_incdec(c, instructions, "decq", expr),
-        UnaryOp::PostIncrement => gen_unary_op_post_incdec(c, instructions, "incq", expr),
-        UnaryOp::PostDecrement => gen_unary_op_post_incdec(c, instructions, "decq", expr),
+        UnaryOp::PreIncrement => gen_unary_op_pre_incdec(c, instructions, true, expr),
+        UnaryOp::PreDecrement => gen_unary_op_pre_incdec(c, instructions, false, expr),
+        UnaryOp::PostIncrement => gen_unary_op_post_incdec(c, instructions, true, expr),
+        UnaryOp::PostDecrement => gen_unary_op_post_incdec(c, instructions, false, expr),
         UnaryOp::BitNot => gen_unary_op_non_assign(c, instructions, "notq", expr),
         UnaryOp::Negate => gen_unary_op_non_assign(c, instructions, "negq", expr),
     }
