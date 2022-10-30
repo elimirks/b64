@@ -14,6 +14,36 @@ use crate::util::logical_cpu_count;
 // Represents an instruction in both ASM and Op Codes (WIP)
 type Inst = (String, Vec<u8>);
 
+fn inst_len(inst: &Inst) -> usize {
+    if inst.1.len() != 0 {
+        return inst.1.len()
+    }
+    if inst.0.starts_with("call") {
+        return 5;
+    }
+    if inst.0.ends_with(":") || inst.0.starts_with("#") {
+        return 0;
+    }
+    if inst.0.contains("(%rip)") {
+        return 7;
+    }
+    // For now, assume all jumps are using 32 bit relative mode
+    // As a later optimization, it would be nice to use the 2-byte version for
+    // jumps that are over less than 128 bytes away.
+    // But, that will require some instruction rewriting.
+    // I think it would be worth doing eventually...
+    if inst.0.starts_with("jmp") {
+        return 5;
+    }
+    if inst.0.starts_with("j") {
+        return 6;
+    }
+    if inst.0.contains("$") && inst.0.contains("movq") {
+        return 7;
+    }
+    panic!("Unknown inst len: {}", inst.0);
+}
+
 struct CodeGenPool {
     running_fibers: usize,
     functions: Vec<RSFunction>,
@@ -2150,6 +2180,7 @@ fn gen(
     while let Some((func_name, instructions)) = pop_pool_result(&pool) {
         CompErr::from_io_res(writeln!(w, "{}:", func_name))?;
         for instruction in instructions {
+            inst_len(&instruction);
             // For debugging, write the opcode equivalent when available
             if instruction.1.len() > 0 {
                 let bytes = instruction.1.iter().map(|byte| {
