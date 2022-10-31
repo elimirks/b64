@@ -70,7 +70,7 @@ struct CodeGenPool {
     running_fibers: usize,
     functions: Vec<RSFunction>,
     // Function name -> instructions
-    results: Vec<(String, Vec<Inst>)>,
+    results: Vec<(String, Vec<Inst>, i64)>,
     errors: Vec<CompErr>,
 }
 
@@ -1354,7 +1354,12 @@ fn gen_call(
         }
     }
 
-    instructions.push((format!("call {}", callee), vec![]));
+    // The call offset is calculated after all the functions are done generating
+    if callee == "*%rax" {
+        instructions.push(("*%rax call".to_string(), vec![0xff, 0xd0]));
+    } else {
+        instructions.push((format!("call {}", callee), vec![0xe8, 0, 0, 0, 0]));
+    }
 
     if params.len() > 6 {
         let stack_arg_count = params.len() - 6;
@@ -1391,7 +1396,7 @@ fn opcode_gen_lea(
 }
 
 // NOTE: The target jump location is actually the index in label_indices
-// The actual relative jump number is added at the end of gen_fun
+// The proper relative jump offset is added at the end of gen_fun
 fn opcode_gen_jump(
     jump: Jump,
     label: usize
@@ -2026,7 +2031,8 @@ fn gen_statement(
     }
 }
 
-fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Vec<Inst>, CompErr> {
+/// Returns the function instructions & number of bytes in the function
+fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<(Vec<Inst>, i64), CompErr> {
     let pos = &function.pos;
     let args = &function.args;
     let body = &function.body;
@@ -2061,6 +2067,7 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Vec<Inst>, CompE
     // Put proper relative jump offsets onto jump instructions.
     // Initially, we populate with label indexes, since we don't know where a
     // label will be until the entire function is generated.
+    // TODO: Shrink jump instructions to 2-byte alternative when possible
     let mut label_offsets = vec![];
     for label in &c.label_indices {
         label_offsets.push(inst_offset(&instructions, *label));
@@ -2075,7 +2082,7 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Vec<Inst>, CompE
             append_le32_bytes(&mut inst.1, label_offset - inst_offset);
         }
     }
-    Ok(instructions)
+    Ok((instructions, inst_offset))
 }
 
 // Prepass to find the global scope, before we start evaluating things
@@ -2241,12 +2248,44 @@ fn gen(
         }))
     }
 
-    while let Some((func_name, instructions)) = pop_pool_result(&pool) {
-        CompErr::from_io_res(writeln!(w, "{}:", func_name))?;
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    let mut guard = pool.0.lock().unwrap();
+    if !guard.errors.is_empty() {
+        return Err(guard.errors[0].clone());
+    }
+
+    let mut fun_offset = 0;
+    let mut fun_offsets = HashMap::<String, i64>::new();
+    for (fun_name, _, fun_len) in &guard.results {
+        fun_offsets.insert(fun_name.clone(), fun_offset);
+        fun_offset += fun_len;
+    }
+    let mut inst_offset = 0;
+    for (fun_name, instructions, _) in &mut guard.results {
+        CompErr::from_io_res(writeln!(w, "{}:", fun_name))?;
         for instruction in instructions {
+            inst_offset += inst_len(&instruction);
             inst_len(&instruction);
             // For debugging, write the opcode equivalent when available
-            if !instruction.1.is_empty() {
+            if instruction.0.starts_with("call") {
+                instruction.1.truncate(1);
+                // FIXME: Kinda rubbish, but it won't be here for long...
+                let mut callee_name = instruction.0.clone();
+                callee_name.remove(0);
+                callee_name.remove(0);
+                callee_name.remove(0);
+                callee_name.remove(0);
+                callee_name.remove(0);
+                let callee_offset = fun_offsets.get(&callee_name).unwrap();
+                append_le32_bytes(&mut instruction.1, callee_offset - inst_offset);
+
+                let bytes = instruction.1.iter().map(|byte| {
+                    format!("{:#04x}", byte)
+                }).collect::<Vec<_>>().join(",");
+                CompErr::from_io_res(writeln!(w, "    .byte {} # {}", bytes, instruction.0))?;
+            } else if !instruction.1.is_empty() {
                 let bytes = instruction.1.iter().map(|byte| {
                     format!("{:#04x}", byte)
                 }).collect::<Vec<_>>().join(",");
@@ -2256,36 +2295,7 @@ fn gen(
             }
         }
     }
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
-
-    let guard = pool.0.lock().unwrap();
-
-    if !guard.errors.is_empty() {
-        return Err(guard.errors[0].clone());
-    }
-
-    // Might be redundant. TODO: Double check!!!
-    let guard_iter = guard.results.iter();
-    for (func_name, instructions) in guard_iter {
-        CompErr::from_io_res(writeln!(w, "{}:", func_name))?;
-        for instruction in instructions {
-            CompErr::from_io_res(writeln!(w, "    {}", instruction.0))?;
-        }
-    }
     Ok(())
-}
-
-fn pop_pool_result(pool: &Arc<(Mutex<CodeGenPool>, Condvar)>) -> Option<(String, Vec<Inst>)> {
-    let (mutex, cvar) = pool.as_ref();
-    let mut guard = mutex.lock().unwrap();
-
-    while guard.results.is_empty() && guard.running_fibers != 0 {
-        guard = cvar.wait(guard).unwrap();
-    }
-    guard.results.pop()
 }
 
 fn unpool_function(pool: &Arc<(Mutex<CodeGenPool>, Condvar)>) -> Option<RSFunction> {
@@ -2319,10 +2329,10 @@ fn codegen_fiber(
                     label_indices: vec![],
                 };
                 match gen_fun(&mut c, &fun) {
-                    Ok(instructions) => {
+                    Ok((instructions, fun_len)) => {
                         let (mutex, cvar) = pool.as_ref();
                         let mut guard = mutex.lock().unwrap();
-                        guard.results.push((fun.name, instructions));
+                        guard.results.push((fun.name, instructions, fun_len));
                         guard.running_fibers -= 1;
                         cvar.notify_all();
                     }
