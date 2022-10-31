@@ -21,7 +21,7 @@ fn inst_len(inst: &Inst) -> usize {
     if inst.0.starts_with("call") {
         return 5;
     }
-    if inst.0.ends_with(":") || inst.0.starts_with("#") {
+    if inst.0.ends_with(":") || inst.0.starts_with("#") || inst.0.starts_with(".") {
         return 0;
     }
     if inst.0.contains("(%rip)") {
@@ -74,19 +74,25 @@ struct FunContext<'a> {
     block_vars: Vec<Vec<String>>,
     local_var_locs: HashMap<String, Loc>,
     // Maps from visible label name to compiled label name
-    labels: HashMap<String, String>,
+    labels: HashMap<String, (String, usize)>,
     // So we never run out of unique labels
     func_id: usize,
     label_counter: usize,
     // Stack of end labels to tell break where to jump to
-    break_dest_stack: Vec<String>,
+    break_dest_stack: Vec<(String, usize)>,
+    // Indices of where each label points to in the instruction list
+    // NOTE: This is the instruction index, not byte index (for now)
+    label_indices: Vec<usize>,
 }
 
 impl FunContext<'_> {
-    fn new_label(&mut self, prefix: &str) -> String {
+    fn new_label(&mut self, prefix: &str) -> (String, usize) {
+        let index = self.label_counter;
+        // Actual value is set when the label is generated as an instruction
+        self.label_indices.push(0);
         self.label_counter += 1;
         // By prefixing with '.', it guarantees no collisions with user labels
-        format!(".{}_{}_{}", prefix, self.func_id, self.label_counter)
+        (format!(".{}_{}_{}", prefix, self.func_id, self.label_counter), index)
     }
 
     fn new_scope(&mut self) {
@@ -157,7 +163,6 @@ fn prepass_gen(
                         format!("Label {} already defined in this function", name),
                     );
                 }
-
                 let l = c.new_label(&format!("LAB_{}", name).to_string());
                 c.labels.insert(name.clone(), l);
             }
@@ -1571,15 +1576,17 @@ fn gen_cond_expr(
     if true_loc != dest_loc {
         instructions.push(opcode_gen_mov(&true_loc, &dest_loc));
     }
-    instructions.push((format!("jmp {}", false_end_label), vec![]));
-    instructions.push((format!("{}:", true_end_label), vec![]));
+    instructions.push((format!("jmp {}", false_end_label.0), vec![]));
+    c.label_indices[true_end_label.1] = instructions.len();
+    instructions.push((format!("{}:", true_end_label.0), vec![]));
 
     let (false_loc, false_used) = gen_expr(c, instructions, false_expr)?;
     used_registers = used_registers.union(false_used);
     if false_loc != dest_loc {
         instructions.push(opcode_gen_mov(&false_loc, &dest_loc));
     }
-    instructions.push((format!("{}:", false_end_label), vec![]));
+    c.label_indices[false_end_label.1] = instructions.len();
+    instructions.push((format!("{}:", false_end_label.0), vec![]));
 
     Ok((dest_loc, used_registers))
 }
@@ -1660,11 +1667,11 @@ fn gen_cond_cmp(
     jump_command: &str,
     lhs: &Expr,
     rhs: &Expr,
-    end_label: &String,
+    end_label: &(String, usize),
 ) -> Result<(), CompErr> {
     let (lhs_loc, rhs_loc, _) = gen_pre_op(c, instructions, lhs, rhs, RegSet::empty())?;
     instructions.push(opcode_gen_cmp(&rhs_loc, &lhs_loc));
-    instructions.push((format!("{} {}", jump_command, end_label), vec![]));
+    instructions.push((format!("{} {}", jump_command, end_label.0), vec![]));
     Ok(())
 }
 
@@ -1672,7 +1679,7 @@ fn gen_cond(
     c: &mut FunContext,
     instructions: &mut Vec<Inst>,
     cond: &Expr,
-    end_label: &String,
+    end_label: &(String, usize),
 ) -> Result<(), CompErr> {
     match cond {
         Expr::BinOperator(_, BinOp::Eq, lhs, rhs) => {
@@ -1695,7 +1702,7 @@ fn gen_cond(
         }
         Expr::Int(_, value) => {
             if *value == 0 {
-                instructions.push((format!("jmp {}", end_label), vec![]));
+                instructions.push((format!("jmp {}", end_label.0), vec![]));
                 Ok(())
             } else {
                 // For non-zero ints, no comparison needs to be made!
@@ -1706,7 +1713,7 @@ fn gen_cond(
             // Fallback to evaluating the entire conditional expression
             let (cond_loc, _) = gen_expr(c, instructions, cond)?;
             instructions.push(opcode_gen_cmp(&0.into(), &cond_loc));
-            instructions.push((format!("jz {}", end_label), vec![]));
+            instructions.push((format!("jz {}", end_label.0), vec![]));
             Ok(())
         }
     }
@@ -1721,7 +1728,8 @@ fn gen_if(
     let if_end_label = c.new_label("IF_END");
     gen_cond(c, instructions, cond, &if_end_label)?;
     gen_statement(c, instructions, if_body)?;
-    instructions.push((format!("{}:", if_end_label), vec![]));
+    c.label_indices[if_end_label.1] = instructions.len();
+    instructions.push((format!("{}:", if_end_label.0), vec![]));
     Ok(())
 }
 
@@ -1732,15 +1740,17 @@ fn gen_while(
     body: &Statement,
 ) -> Result<(), CompErr> {
     let while_begin_label = c.new_label("WHILE_BEGIN");
-    instructions.push((format!("{}:", while_begin_label), vec![]));
+    c.label_indices[while_begin_label.1] = instructions.len();
+    instructions.push((format!("{}:", while_begin_label.0), vec![]));
     let while_end_label = c.new_label("WHILE_END");
 
     c.break_dest_stack.push(while_end_label.clone());
 
     gen_cond(c, instructions, cond, &while_end_label)?;
     gen_statement(c, instructions, body)?;
-    instructions.push((format!("jmp {}", while_begin_label), vec![]));
-    instructions.push((format!("{}:", while_end_label), vec![]));
+    instructions.push((format!("jmp {}", while_begin_label.0), vec![]));
+    c.label_indices[while_end_label.1] = instructions.len();
+    instructions.push((format!("{}:", while_end_label.0), vec![]));
 
     c.break_dest_stack.pop();
     Ok(())
@@ -1758,10 +1768,12 @@ fn gen_if_else(
 
     gen_cond(c, instructions, cond, &if_end_label)?;
     gen_statement(c, instructions, if_body)?;
-    instructions.push((format!("jmp {}", else_end_label), vec![]));
-    instructions.push((format!("{}:", if_end_label), vec![]));
+    instructions.push((format!("jmp {}", else_end_label.0), vec![]));
+    c.label_indices[if_end_label.1] = instructions.len();
+    instructions.push((format!("{}:", if_end_label.0), vec![]));
     gen_statement(c, instructions, else_body)?;
-    instructions.push((format!("{}:", else_end_label), vec![]));
+    c.label_indices[else_end_label.1] = instructions.len();
+    instructions.push((format!("{}:", else_end_label.0), vec![]));
     Ok(())
 }
 
@@ -1792,6 +1804,9 @@ fn gen_switch(
     let mut body_inst = vec![];
 
     let switch_end_label = c.new_label("SW_END");
+    // We first store these as offsets indexed at body_inst
+    // Then we increment them based on the `instructions`
+    let mut case_label_indices = vec![];
 
     c.break_dest_stack.push(switch_end_label.clone());
     for inner in body {
@@ -1803,9 +1818,11 @@ fn gen_switch(
                         "`default` label is already defined in switch".to_string(),
                     );
                 }
-                let label_name = c.new_label("SW_DEFAULT");
-                body_inst.push((format!("{}:", label_name), vec![]));
-                default_label = Some(label_name);
+                let label = c.new_label("SW_DEFAULT");
+                case_label_indices.push(label.1);
+                c.label_indices[label.1] = body_inst.len();
+                body_inst.push((format!("{}:", label.0), vec![]));
+                default_label = Some(label.0);
             }
             SwInner::Case(pos, value) => {
                 if used_case_values.contains(value) {
@@ -1817,10 +1834,12 @@ fn gen_switch(
                 used_case_values.insert(value);
 
                 let (case_loc, _) = gen_int(&mut body_inst, *value, case_reg);
-                let label_name = c.new_label("SW_CASE");
-                body_inst.push((format!("{}:", label_name), vec![]));
+                let label = c.new_label("SW_CASE");
+                case_label_indices.push(label.1);
+                c.label_indices[label.1] = body_inst.len();
+                body_inst.push((format!("{}:", label.0), vec![]));
                 instructions.push(opcode_gen_cmp(&case_loc, &cond_loc));
-                instructions.push((format!("je {}", label_name), vec![]));
+                instructions.push((format!("je {}", label.0), vec![]));
             }
             SwInner::Statement(body) => gen_statement(c, &mut body_inst, body)?,
         }
@@ -1829,13 +1848,17 @@ fn gen_switch(
 
     let inst = match default_label {
         Some(ref label_name) => format!("jmp {}", label_name),
-        None => format!("jmp {}", switch_end_label),
+        None => format!("jmp {}", switch_end_label.1),
     };
 
     // Default jump point
     instructions.push((inst, vec![]));
+    for index in case_label_indices {
+        c.label_indices[index] += instructions.len();
+    }
     instructions.append(&mut body_inst);
-    instructions.push((format!("{}:", switch_end_label), vec![]));
+    c.label_indices[switch_end_label.1] = instructions.len();
+    instructions.push((format!("{}:", switch_end_label.0), vec![]));
     Ok(())
 }
 
@@ -1909,15 +1932,15 @@ fn gen_statement(
         Statement::Break(pos) => match c.break_dest_stack.last() {
             Some(label) => {
                 instructions.push(("# break".to_string(), vec![]));
-                instructions.push((format!("jmp {}", label), vec![]));
+                instructions.push((format!("jmp {}", label.0), vec![]));
                 Ok(())
             }
             None => CompErr::err(pos, "Cannot break from this location".to_string()),
         },
         Statement::Goto(pos, name) => match c.labels.get(name) {
             Some(label) => {
-                instructions.push((format!("# goto {}", label), vec![]));
-                instructions.push((format!("jmp {}", label), vec![]));
+                instructions.push((format!("# goto {}", label.0), vec![]));
+                instructions.push((format!("jmp {}", label.0), vec![]));
                 Ok(())
             }
             None => CompErr::err(
@@ -1927,7 +1950,9 @@ fn gen_statement(
         },
         // We preprocess the labels, so we know it must exist
         Statement::Label(_, name) => {
-            instructions.push((format!("{}:", c.labels.get(name).unwrap()), vec![]));
+            let l = c.labels.get(name).unwrap();
+            c.label_indices[l.1] = instructions.len();
+            instructions.push((format!("{}:", l.0), vec![]));
             Ok(())
         }
         Statement::Return => {
@@ -2011,6 +2036,12 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Vec<Inst>, CompE
     }
 
     c.drop_scope();
+
+    for label_index in &c.label_indices {
+        let x = instructions[*label_index].0.clone();
+        instructions[*label_index].0 = format!("{} # {}", x, label_index);
+    }
+
     Ok(instructions)
 }
 
@@ -2182,7 +2213,7 @@ fn gen(
         for instruction in instructions {
             inst_len(&instruction);
             // For debugging, write the opcode equivalent when available
-            if instruction.1.len() > 0 {
+            if instruction.1.len() > 0 && !instruction.0.starts_with("j") {
                 let bytes = instruction.1.iter().map(|byte| {
                     format!("{:#04x}", byte)
                 }).collect::<Vec<_>>().join(",");
@@ -2254,8 +2285,8 @@ fn codegen_fiber(
                     func_id,
                     label_counter: 0,
                     break_dest_stack: vec![],
+                    label_indices: vec![],
                 };
-
                 match gen_fun(&mut c, &fun) {
                     Ok(instructions) => {
                         let (mutex, cvar) = pool.as_ref();
