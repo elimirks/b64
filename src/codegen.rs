@@ -30,9 +30,6 @@ fn inst_len(inst: &Inst) -> i64 {
     if !inst.1.is_empty() {
         return inst.1.len() as i64;
     }
-    if inst.0.starts_with("call") {
-        return 5;
-    }
     if inst.0.contains(':') || inst.0.starts_with('#') {
         return 0;
     }
@@ -70,7 +67,7 @@ struct CodeGenPool {
     running_fibers: usize,
     functions: Vec<RSFunction>,
     // Function name -> instructions
-    results: Vec<(String, Vec<Inst>, i64)>,
+    results: Vec<(String, Vec<Inst>, i64, Vec<(usize, String)>)>,
     errors: Vec<CompErr>,
 }
 
@@ -103,6 +100,9 @@ struct FunContext<'a> {
     // Indices of where each label points to in the instruction list
     // NOTE: This is the instruction index, not byte index (for now)
     label_indices: Vec<usize>,
+    // List of instructions that require linking
+    // The linked instruction will always be last
+    need_linking: Vec<(usize, String)>,
 }
 
 impl FunContext<'_> {
@@ -1369,8 +1369,9 @@ fn gen_call(
 
     // The call offset is calculated after all the functions are done generating
     if callee == "*%rax" {
-        instructions.push(("*%rax call".to_string(), vec![0xff, 0xd0]));
+        instructions.push(("call *%rax".to_string(), vec![0xff, 0xd0]));
     } else {
+        c.need_linking.push((instructions.len(), callee.to_string()));
         instructions.push((format!("call {}", callee), vec![0xe8, 0, 0, 0, 0]));
     }
 
@@ -2281,6 +2282,18 @@ fn elf_gen_shstrtab() -> Vec<u8> {
     bytes
 }
 
+/// Crappy function but will be removed eventually so I don't care
+fn offset_after_instruction(
+    instructions: &Vec<Inst>,
+    inst_index: i64,
+) -> i64 {
+    let mut offset = 0;
+    for i in 0..=inst_index as usize {
+        offset += inst_len(&instructions[i]);
+    }
+    offset
+}
+
 fn gen(
     strings: Vec<(usize, Vec<Vec<char>>)>,
     functions: Vec<RSFunction>,
@@ -2323,9 +2336,45 @@ fn gen(
         return Err(guard.errors[0].clone());
     }
 
-    let mut all_instructions: Vec<u8> = vec![];
+    let mut fun_offsets = HashMap::<String, usize>::new();
+    let mut inst_offset = 0;
+    for (fun_name, instructions, _, _) in &mut guard.results {
+        fun_offsets.insert(fun_name.clone(), inst_offset);
+        for instruction in instructions {
+            inst_offset += instruction.1.len();
+        }
+    }
 
-    for (_, instructions, _) in &mut guard.results {
+    // +9 since that's the number of bytes past the main call in _start
+    let main_offset = *fun_offsets.get("main").unwrap() + 9;
+    // Generate the _start function
+    let mut all_instructions: Vec<u8> = vec![
+        // mov    (%rsp),%rdi
+        0x48, 0x8b, 0x3c, 0x24,
+        // lea    0x8(%rsp),%rsi
+        0x48, 0x8d, 0x74, 0x24, 0x08,
+        // call main
+        0xe8,
+        main_offset as u8,
+        (main_offset >> 8) as u8, 
+        (main_offset >> (8*2)) as u8, 
+        (main_offset >> (8*3)) as u8, 
+        // mov    %al,%bh
+        0x88, 0xc7,
+        // mov    $0x3c,%rax
+        0x48, 0x31, 0xc0, 0xb0, 0x3c,
+        // syscall
+        0x0f, 0x05,
+    ];
+
+    for (_, instructions, _, need_linking) in &mut guard.results {
+        for (inst_index, symbol) in need_linking {
+            let inst_offset = offset_after_instruction(instructions, *inst_index as i64);
+            let opcodes = &mut instructions[*inst_index].1;
+            opcodes.truncate(opcodes.len() - 4);
+            let callee_offset = *fun_offsets.get(symbol).unwrap() as i64;
+            append_le32_bytes(opcodes, callee_offset - inst_offset);
+        }
         for instruction in instructions {
             if instruction.1.is_empty() {
                 panic!("No opcodes for instruction: {:?}", instruction.0);
@@ -2333,6 +2382,7 @@ fn gen(
             all_instructions.extend(&instruction.1);
         }
     }
+
     let prog_size = all_instructions.len() as i64;
 
     let strtab_data = elf_gen_shstrtab();
@@ -2383,12 +2433,13 @@ fn codegen_fiber(
                     label_counter: 0,
                     break_dest_stack: vec![],
                     label_indices: vec![],
+                    need_linking: vec![],
                 };
                 match gen_fun(&mut c, &fun) {
                     Ok((instructions, fun_len)) => {
                         let (mutex, cvar) = pool.as_ref();
                         let mut guard = mutex.lock().unwrap();
-                        guard.results.push((fun.name, instructions, fun_len));
+                        guard.results.push((fun.name, instructions, fun_len, c.need_linking));
                         guard.running_fibers -= 1;
                         cvar.notify_all();
                     }
