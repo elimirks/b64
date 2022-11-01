@@ -34,10 +34,10 @@ elf_header_size = 0x40
 program_header_size = 0x38
 section_header_size = 0x40
 
-virt_program_address = [0x00, 0x10, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00]
+virt_program_address = to_le64(0x400000)
 
 # It seems this must be padded to align the prog data to 0x1000
-prog_padding = bytes(8 * 490)
+prog_padding = bytes(8 * 497)
 
 opcode_data = bytes([
     0x48, 0xc7, 0xc7, 0x2a, 0x00, 0x00, 0x00, 0x48,
@@ -51,24 +51,6 @@ prog_data = prog_padding + opcode_data + bytes([
 ])
 
 program_headers = [
-    [
-        # p_type: Loadable segment
-        0x01, 0x00, 0x00, 0x00,
-        # p_flags
-        0x04, 0x00, 0x00, 0x00,
-        # p_offset: Offset in the file image
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        # p_vaddr: Virtual address of the segment in memory
-        0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
-        # p_paddr: Physical address of the segment in memory
-        0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
-        # p_filesz: Size in bytes of the segment in file image
-        0xb0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        # p_memsz: Size in bytes of the segment in memory
-        0xb0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        # p_align: Required section alignment
-        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ],
     [
         # p_type: Loadable segment
         0x01, 0x00, 0x00, 0x00,
@@ -91,7 +73,7 @@ program_headers = [
 ]
 prog_offset = len(flatten(program_headers)) + elf_header_size + len(prog_padding)
 # Populate program data offset
-program_headers[1][8:16] = to_le64(prog_offset)
+program_headers[0][8:16] = to_le64(prog_offset)
 program_header_bytes = bytes(flatten(program_headers))
 
 section_headers = [
