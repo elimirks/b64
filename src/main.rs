@@ -8,6 +8,7 @@ mod util;
 use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs;
+use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::process::{Command, Stdio};
@@ -16,7 +17,6 @@ use codegen::generate;
 use parser::*;
 
 struct Opts {
-    asm: bool,
     run: bool,
     output: Option<String>,
     inputs: Vec<String>,
@@ -30,83 +30,37 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 fn main() {
     let opts = parse_opts();
 
-    if opts.asm {
-        let parse_result = parse_or_die(&opts.inputs);
-        let mut stdout = io::stdout();
-        generate(parse_result, &mut stdout);
+    let output_path = if opts.run {
+        let pid = std::process::id();
+        format!("/tmp/b64_{}.bin", pid)
     } else {
-        let output_path = if opts.run {
-            let pid = std::process::id();
-            format!("/tmp/b64_{}.bin", pid)
-        } else {
-            match opts.output {
-                Some(output) => output,
-                None => "a.out".to_string(),
-            }
-        };
-
-        compile(&opts.inputs, &output_path);
-
-        if opts.run {
-            let prog_status = Command::new(&output_path)
-                .args(opts.args)
-                .status()
-                .expect("Failed running program");
-
-            fs::remove_file(output_path).unwrap();
-
-            std::process::exit(match prog_status.code() {
-                Some(code) => code,
-                _ => 1,
-            });
+        match opts.output {
+            Some(output) => output,
+            None => "a.out".to_string(),
         }
+    };
+
+    compile(&opts.inputs, &output_path);
+
+    if opts.run {
+        let prog_status = Command::new(&output_path)
+            .args(opts.args)
+            .status()
+            .expect("Failed running program");
+
+        fs::remove_file(output_path).unwrap();
+
+        std::process::exit(match prog_status.code() {
+            Some(code) => code,
+            _ => 1,
+        });
     }
 }
 
 fn compile(input_paths: &Vec<String>, output_path: &String) {
-    let mut hasher = DefaultHasher::new();
-    input_paths.hash(&mut hasher);
-    let run_hash = hasher.finish();
-
-    let tmp_obj_path = format!("/tmp/b64_{}.o", run_hash);
-
-    let mut as_process = Command::new("as")
-        .stdin(Stdio::piped())
-        .arg("-o")
-        .arg(&tmp_obj_path)
-        .spawn()
-        .expect("Failed running the GNU Assembler");
-
     let parse_result = parse_or_die(input_paths);
     // Stream the assembly code straight into GNU assembler
-    generate(parse_result, &mut as_process.stdin.as_ref().unwrap());
-
-    match as_process.wait() {
-        Ok(status) => {
-            if !status.success() {
-                let code = status.code().unwrap_or(1);
-                std::process::exit(code);
-            }
-        }
-        Err(message) => {
-            println!("Failed running GNU Assembler: {}", message);
-            std::process::exit(1);
-        }
-    }
-
-    let ld_status = Command::new("ld")
-        .arg(&tmp_obj_path)
-        .arg("-o")
-        .arg(&output_path)
-        .status()
-        .expect("Failed running GNU Linker");
-
-    if !ld_status.success() {
-        let code = ld_status.code().unwrap_or(1);
-        std::process::exit(code);
-    } else {
-        fs::remove_file(tmp_obj_path).unwrap();
-    }
+    generate(parse_result, &mut File::create(output_path).unwrap());
 }
 
 fn parse_opts() -> Opts {
@@ -114,7 +68,6 @@ fn parse_opts() -> Opts {
     let name = args[0].clone();
 
     let mut opts = Opts {
-        asm: false,
         run: false,
         output: None,
         inputs: vec![],
@@ -136,9 +89,6 @@ fn parse_opts() -> Opts {
             "-h" | "--help" => {
                 print_usage(&name);
                 std::process::exit(0);
-            }
-            "-s" => {
-                opts.asm = true;
             }
             "-r" => {
                 opts.run = true;
@@ -168,7 +118,6 @@ fn print_usage(name: &String) {
     println!("USAGE:\n    {} [OPTIONS] [INPUTS]", name);
     println!("OPTIONS:");
     println!("    -h, --help     Print this message");
-    println!("    -s             Compile to ASM, not into a binary");
     println!("    -o <OUTPUT>    Write the output to the given path");
     println!("    -r             Directly run instead of saving the binary");
     println!("    --             Any args after '--' will pass through");

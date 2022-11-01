@@ -154,6 +154,10 @@ fn is_32_bounded(value: i64) -> bool {
     value < i32::MAX as i64 && value >= i32::MIN as i64
 }
 
+fn is_16_bounded(value: i64) -> bool {
+    value < i16::MAX as i64 && value >= i16::MIN as i64
+}
+
 fn is_8_bounded(value: i64) -> bool {
     value < i8::MAX as i64 && value >= i8::MIN as i64
 }
@@ -231,6 +235,15 @@ fn prepass_gen(
     Ok(())
 }
 
+fn append_le16_bytes(
+    vector: &mut Vec<u8>,
+    value: i64,
+) {
+    assert!(is_16_bounded(value));
+    vector.push(value as u8);
+    vector.push((value >> 8) as u8);
+}
+
 fn append_le32_bytes(
     vector: &mut Vec<u8>,
     value: i64,
@@ -244,7 +257,7 @@ fn append_le32_bytes(
 
 fn append_le64_bytes(
     vector: &mut Vec<u8>,
-    value: i64,
+    value: i64
 ) {
     vector.push(value as u8);
     vector.push((value >> 8) as u8);
@@ -2126,88 +2139,146 @@ fn root_prepass<'a>(
     Ok((scope, root_vars))
 }
 
-fn generate_data_segment(root_vars: &Vec<&Var>, w: &mut dyn Write) -> Result<(), std::io::Error> {
-    writeln!(w, ".data")?;
-    for var in root_vars {
-        write!(w, "{}:\n    ", var.name())?;
+const PAGE_SIZE: i64 = 0x1000;
+// We need to pad after the program headers until this point, sadly.
+// It's due to how Linux uses mmap to read in the prog data.
+const PROGRAM_OFFSET: i64 = PAGE_SIZE;
+const VIRTUAL_PROG_ADDRESS: i64 = 0x400000;
+const ELF_HEADER_SIZE: i64 = 0x40;
+const PROGRAM_HEADER_SIZE: i64 = 0x38;
+const SECTION_HEADER_SIZE: i64 = 0x40;
+const SECTION_HEADER_COUNT: i64 = 3;
+const SHTAB_SECTION_INDEX: i64 = 2;
 
-        match var {
-            Var::Single(_, None) => {
-                writeln!(w, ".skip 8")?;
-            }
-            Var::Single(_, Some(value)) => {
-                writeln!(w, ".quad {}", value)?;
-            }
-            Var::Vec(_, size, initial) => {
-                if initial.is_empty() {
-                    // +1 for the vec pointer
-                    writeln!(w, ".skip {}", (1 + size) * 8)?;
-                } else {
-                    // One extra at the begining for vec pointer
-                    write!(w, ".quad 0")?;
-
-                    for value in initial.iter() {
-                        write!(w, ",{}", value)?;
-                    }
-
-                    // Fill the rest with zeros
-                    for _ in initial.len()..*size as usize {
-                        write!(w, ",0")?;
-                    }
-                    writeln!(w)?;
-                }
-            }
-        };
-    }
-    Ok(())
+fn elf_gen_elf_header(section_header_offset: i64) -> Vec<u8> {
+    let mut bytes = vec![
+        // Magic ELF header
+        0x7f, 0x45, 0x4c, 0x46,
+        // 64-bit
+        0x02,
+        // Little endian
+        0x01,
+        // Version (always 1)
+        0x01,
+        // System V format
+        0x00,
+        // ABI version
+        0x00,
+        // Padding
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // e_type (executable file)
+        0x02, 0x00,
+        // e_machine (AMD x86-64)
+        0x3e, 0x00,
+        // e_version (1 for original ELF version)
+        0x01, 0x00, 0x00, 0x00,
+    ];
+    // e_entry
+    append_le64_bytes(&mut bytes, VIRTUAL_PROG_ADDRESS);
+    // e_phoff: Program header offset in the generated file
+    append_le64_bytes(&mut bytes, ELF_HEADER_SIZE);
+    // e_shoff
+    append_le64_bytes(&mut bytes, section_header_offset);
+    // e_flags
+    append_le32_bytes(&mut bytes, 0);
+    // e_ehsize
+    append_le16_bytes(&mut bytes, ELF_HEADER_SIZE);
+    // e_phentsize
+    append_le16_bytes(&mut bytes, PROGRAM_HEADER_SIZE);
+    // e_phnum: We only ever have a single program header
+    append_le16_bytes(&mut bytes, 1);
+    // e_shentsize
+    append_le16_bytes(&mut bytes, SECTION_HEADER_SIZE);
+    // e_shnum
+    append_le16_bytes(&mut bytes, SECTION_HEADER_COUNT);
+    // e_shstrndx
+    append_le16_bytes(&mut bytes, SHTAB_SECTION_INDEX);
+    bytes
 }
 
-fn generate_start(root_vars: &Vec<&Var>, w: &mut dyn Write) -> Result<(), std::io::Error> {
-    writeln!(w, ".text\n.global _start\n_start:")?;
-
-    for var in root_vars {
-        match var {
-            Var::Single(_, _) => {}
-            Var::Vec(name, _, _) => {
-                // Initialize vec pointers
-                // For consistency with stack vectors, data vectors are pointers
-                writeln!(w, "    leaq {}(%rip),%rax", name)?;
-                writeln!(w, "    addq $8,%rax")?;
-                writeln!(w, "    movq %rax,{}(%rip)", name)?;
-            }
-        }
-    }
-
-    writeln!(w, "    movq (%rsp),%rdi")?; // Pass argc as first `main` arg
-    writeln!(w, "    leaq 8(%rsp),%rsi")?; // Pass argv as second `main` arg
-    writeln!(w, "    call main")?;
-    writeln!(w, "    movq %rax,%rdi")?;
-    writeln!(w, "    movq $60,%rax")?;
-    writeln!(w, "    syscall")?;
-
-    Ok(())
+fn elf_gen_program_header(program_size: i64) -> Vec<u8> {
+    let mut bytes = vec![
+        // p_type: Loadable segment
+        0x01, 0x00, 0x00, 0x00,
+        // p_flags
+        0x05, 0x00, 0x00, 0x00,
+    ];
+    // p_offset: Offset in the file image of the program opcodes
+    append_le64_bytes(&mut bytes, PROGRAM_OFFSET);
+    // p_vaddr: Virtual address of the segment in memory
+    append_le64_bytes(&mut bytes, VIRTUAL_PROG_ADDRESS);
+    // p_paddr: Physical address of the segment in memory
+    append_le64_bytes(&mut bytes, VIRTUAL_PROG_ADDRESS);
+    // p_filesz: Size in bytes of the segment in file image
+    append_le64_bytes(&mut bytes, program_size);
+    // p_memsz: Size in bytes of the segment in memory
+    append_le64_bytes(&mut bytes, program_size);
+    // p_align: Required section alignment
+    append_le64_bytes(&mut bytes, PAGE_SIZE);
+    bytes
 }
 
-fn generate_strings(
-    strings: &Vec<(usize, Vec<Vec<char>>)>,
-    w: &mut dyn Write,
-) -> Result<(), std::io::Error> {
-    writeln!(w, ".text")?;
-    // Prevent constant strings from being modified
-    writeln!(w, ".section .rodata")?;
-    for (file_id, file_strings) in strings {
-        for (string_index, string_chars) in file_strings.iter().enumerate() {
-            let label = label_for_string_id(*file_id, string_index);
-            // TODO: Print nicely instead of packing into quads
-            let string_quads = pack_chars(string_chars);
-            write!(w, "{}:\n    .quad {}", label, string_quads[0])?;
-            for quad in string_quads.iter().skip(1) {
-                write!(w, ",{}", quad)?;
-            }
-            writeln!(w)?;
-        }
-    }
-    Ok(())
+fn elf_gen_section_headers(program_size: i64, strtab_size: i64) -> Vec<u8> {
+    // Initially populate with the mandator null header
+    let mut bytes = vec![0; SECTION_HEADER_SIZE as usize];
+
+    //////////////////////////
+    // Program data section //
+    //////////////////////////
+
+    // sh_name: Offset to a string in .shstrtab section
+    append_le32_bytes(&mut bytes, 0x0b);
+    // sh_type
+    append_le32_bytes(&mut bytes, 0x01);
+    // sh_flags
+    append_le64_bytes(&mut bytes, 0x06);
+    // sh_addr: Virtual address of the section in memory, for loaded sections
+    append_le64_bytes(&mut bytes, VIRTUAL_PROG_ADDRESS);
+    // sh_offset: Offset in the file image of this section
+    append_le64_bytes(&mut bytes, PROGRAM_OFFSET);
+    // sh_size: Size in bytes of the section in the file image
+    append_le64_bytes(&mut bytes, program_size);
+    // sh_link
+    append_le32_bytes(&mut bytes, 0);
+    // sh_info
+    append_le32_bytes(&mut bytes, 0);
+    // sh_addralign
+    append_le64_bytes(&mut bytes, PAGE_SIZE);
+    // sh_entsize
+    append_le64_bytes(&mut bytes, 0);
+
+    ///////////////////////
+    // .shstrtab section //
+    ///////////////////////
+    // sh_name: Offset to a string in .shstrtab section
+    append_le32_bytes(&mut bytes, 0x01);
+    // sh_type
+    append_le32_bytes(&mut bytes, 0x03);
+    // sh_flags
+    append_le64_bytes(&mut bytes, 0x00);
+    // sh_addr: Virtual address of the section in memory, for loaded sections
+    append_le64_bytes(&mut bytes, 0);
+    // sh_offset: Offset in the file image of this section
+    append_le64_bytes(&mut bytes, PROGRAM_OFFSET + program_size);
+    // sh_size: Size in bytes of the section in the file image
+    append_le64_bytes(&mut bytes, strtab_size);
+    // sh_link
+    append_le32_bytes(&mut bytes, 0);
+    // sh_info
+    append_le32_bytes(&mut bytes, 0);
+    // sh_addralign
+    append_le64_bytes(&mut bytes, 0);
+    // sh_entsize
+    append_le64_bytes(&mut bytes, 0);
+
+    bytes
+}
+
+fn elf_gen_shstrtab() -> Vec<u8> {
+    let mut bytes = vec![0];
+    bytes.extend_from_slice(".shstrtab\0".as_bytes());
+    bytes.extend_from_slice(".text\0".as_bytes());
+    bytes
 }
 
 fn gen(
@@ -2220,10 +2291,6 @@ fn gen(
     let mut w = BufWriter::new(writer);
 
     let (global_scope, root_vars) = root_prepass(&functions, &variables, defines)?;
-
-    CompErr::from_io_res(generate_data_segment(&root_vars, &mut w))?;
-    CompErr::from_io_res(generate_strings(&strings, &mut w))?;
-    CompErr::from_io_res(generate_start(&root_vars, &mut w))?;
 
     let pool = Arc::new((
         Mutex::new(CodeGenPool {
@@ -2256,45 +2323,34 @@ fn gen(
         return Err(guard.errors[0].clone());
     }
 
-    let mut fun_offset = 0;
-    let mut fun_offsets = HashMap::<String, i64>::new();
-    for (fun_name, _, fun_len) in &guard.results {
-        fun_offsets.insert(fun_name.clone(), fun_offset);
-        fun_offset += fun_len;
-    }
-    let mut inst_offset = 0;
-    for (fun_name, instructions, _) in &mut guard.results {
-        CompErr::from_io_res(writeln!(w, "{}:", fun_name))?;
-        for instruction in instructions {
-            inst_offset += inst_len(&instruction);
-            inst_len(&instruction);
-            // For debugging, write the opcode equivalent when available
-            if instruction.0.starts_with("call") {
-                instruction.1.truncate(1);
-                // FIXME: Kinda rubbish, but it won't be here for long...
-                let mut callee_name = instruction.0.clone();
-                callee_name.remove(0);
-                callee_name.remove(0);
-                callee_name.remove(0);
-                callee_name.remove(0);
-                callee_name.remove(0);
-                let callee_offset = fun_offsets.get(&callee_name).unwrap();
-                append_le32_bytes(&mut instruction.1, callee_offset - inst_offset);
+    let mut all_instructions: Vec<u8> = vec![];
 
-                let bytes = instruction.1.iter().map(|byte| {
-                    format!("{:#04x}", byte)
-                }).collect::<Vec<_>>().join(",");
-                CompErr::from_io_res(writeln!(w, "    .byte {} # {}", bytes, instruction.0))?;
-            } else if !instruction.1.is_empty() {
-                let bytes = instruction.1.iter().map(|byte| {
-                    format!("{:#04x}", byte)
-                }).collect::<Vec<_>>().join(",");
-                CompErr::from_io_res(writeln!(w, "    .byte {} # {}", bytes, instruction.0))?;
-            } else {
-                CompErr::from_io_res(writeln!(w, "    {}", instruction.0))?;
+    for (_, instructions, _) in &mut guard.results {
+        for instruction in instructions {
+            if instruction.1.is_empty() {
+                panic!("No opcodes for instruction: {:?}", instruction.0);
             }
+            all_instructions.extend(&instruction.1);
         }
     }
+    let prog_size = all_instructions.len() as i64;
+
+    let strtab_data = elf_gen_shstrtab();
+    let strtab_size = strtab_data.len() as i64;
+
+    let program_header = elf_gen_program_header(prog_size);
+    let section_headers = elf_gen_section_headers(prog_size, strtab_size);
+
+    let section_table_offset = PROGRAM_OFFSET + prog_size + strtab_size;
+    let elf_header = elf_gen_elf_header(section_table_offset);
+
+    CompErr::from_io_res(w.write_all(&elf_header))?;
+    CompErr::from_io_res(w.write_all(&program_header))?;
+    let padding = PAGE_SIZE as usize - elf_header.len() - program_header.len();
+    CompErr::from_io_res(w.write_all(&vec![0; padding]))?;
+    CompErr::from_io_res(w.write_all(&all_instructions))?;
+    CompErr::from_io_res(w.write_all(&strtab_data))?;
+    CompErr::from_io_res(w.write_all(&section_headers))?;
     Ok(())
 }
 
