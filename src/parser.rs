@@ -13,8 +13,8 @@ pub struct ParseResult {
     // Stored in order of file_id (in Pos)
     // Stores (file_name, file_paths)
     pub file_paths: Vec<(String, PathBuf)>,
-    // Stores (file_id, strings_vec)
-    pub strings: Vec<(usize, Vec<Vec<char>>)>,
+    // Stores (string_id, string_chars)
+    pub strings: Vec<(usize, Vec<u8>)>,
     pub functions: Vec<RSFunction>,
     pub variables: Vec<RSVariable>,
     pub defines: Vec<RSDefine>,
@@ -80,7 +80,7 @@ pub struct ParseContext<'a> {
     pub offset: usize,
     pub file_id: usize,
     // Tracks the "floating" string literals that aren't assigned to vectors
-    pub strings: Vec<Vec<char>>,
+    pub strings: Vec<Vec<u8>>,
     // Used for the tokenizer stack
     pub tok_stack: Vec<(Pos, Token)>,
 }
@@ -89,6 +89,10 @@ impl ParseContext<'_> {
     pub fn pos(&self) -> Pos {
         Pos::new(self.offset, self.file_id)
     }
+}
+
+fn get_string_id(file_id: usize, string_index: usize) -> usize {
+    (file_id << 32) + string_index
 }
 
 fn parse_root_var(c: &mut ParseContext, name: String) -> Result<RSVariable, CompErr> {
@@ -101,7 +105,7 @@ fn parse_root_var(c: &mut ParseContext, name: String) -> Result<RSVariable, Comp
 // Packs the given chars into 64 bit wide chars.
 // Return value will always be null terminated.
 // Expects all chars to be valid!
-pub fn pack_chars(chars: &Vec<char>) -> Vec<i64> {
+pub fn pack_chars(chars: &Vec<u8>) -> Vec<i64> {
     let mut values = vec![];
     let mut i = 0;
 
@@ -199,7 +203,7 @@ fn parse_var_entry(c: &mut ParseContext, name: String) -> Result<Var, CompErr> {
 fn parse_import(c: &mut ParseContext) -> Result<RSImport, CompErr> {
     match pop_tok(c)? {
         (pos, Token::Str(chars)) => {
-            let path: String = chars.into_iter().collect();
+            let path: String = std::str::from_utf8(&chars).unwrap().to_string();
             parse_tok(c, Token::Semicolon)?;
             Ok(RSImport { pos, path })
         }
@@ -686,8 +690,9 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
         Token::Int(value) => Ok(Expr::Int(pos, value)),
         Token::Char(chars) => Ok(Expr::Int(pos, pack_chars(&chars)[0])),
         Token::Str(value) => {
+            let string_id = get_string_id(c.file_id, c.strings.len());
             c.strings.push(value);
-            Ok(Expr::Str(pos, (c.file_id, c.strings.len() - 1)))
+            Ok(Expr::Str(pos, string_id))
         }
         Token::Ampersand => match pop_tok(c)? {
             (pos, Token::Id(id)) => Ok(Expr::Reference(pos, id)),
@@ -836,10 +841,11 @@ pub fn print_comp_error(file_paths: &[(String, PathBuf)], err: &CompErr) {
     }
 }
 
+/// Returns (statements, strings)
 fn parse_content(
     file_id: usize,
     content: String,
-) -> Result<(RootStatements, Vec<Vec<char>>), CompErr> {
+) -> Result<(RootStatements, Vec<Vec<u8>>), CompErr> {
     let mut c = ParseContext {
         content: content.as_bytes(),
         offset: 0,
@@ -979,7 +985,13 @@ fn parse_file(file_id: usize, path: PathBuf, parse_state: &Arc<(Mutex<ParseState
             guard.result.variables.append(&mut statements.variables);
             guard.result.defines.append(&mut statements.defines);
             guard.result.file_paths.push((path_str, path));
-            guard.result.strings.push((file_id, strings));
+
+            let mut string_index = 0;
+            for string in strings {
+                let string_id = get_string_id(file_id, string_index);
+                guard.result.strings.push((string_id, string));
+                string_index += 1;
+            }
         }
         Err(error) => {
             guard.result.errors.push(error);

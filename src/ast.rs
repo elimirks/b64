@@ -130,10 +130,10 @@ impl Var {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Id(Pos, String),
-    // The second parameter is the label id: (file_no, str_index)
+    // The second parameter is the unique string ID
     // The actual string raw data is stored separately, so we can
     // easily allocate it in the data segment
-    Str(Pos, (usize, usize)),
+    Str(Pos, usize),
     Call(Pos, Box<Expr>, Vec<Expr>),
     Int(Pos, i64),
     Assignment(Pos, String, Box<Expr>),

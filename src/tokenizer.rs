@@ -10,8 +10,8 @@ use std::arch::x86_64::*;
 pub enum Token {
     Id(String),
     Label(String),
-    Str(Vec<char>),
-    Char(Vec<char>),
+    Str(Vec<u8>),
+    Char(Vec<u8>),
     Int(i64),
     Import,
     Define,
@@ -319,7 +319,7 @@ fn get_tok_char(c: &mut ParseContext) -> Result<(Pos, Token), CompErr> {
 }
 
 // Gets chars enclosed in the given terminal character
-unsafe fn get_inside_quotes(c: &mut ParseContext, terminal: char) -> Result<Vec<char>, CompErr> {
+unsafe fn get_inside_quotes(c: &mut ParseContext, terminal: char) -> Result<Vec<u8>, CompErr> {
     let mut i = c.offset;
     let mut chars = vec![];
 
@@ -358,7 +358,7 @@ unsafe fn get_inside_quotes(c: &mut ParseContext, terminal: char) -> Result<Vec<
                 }
                 chr
             }
-        };
+        } as u8;
         i += 1;
         chars.push(chr);
     }

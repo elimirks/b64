@@ -5,13 +5,10 @@ mod parser;
 mod tokenizer;
 mod util;
 
-use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs;
 use std::fs::File;
-use std::hash::{Hash, Hasher};
-use std::io;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use codegen::generate;
 use parser::*;
