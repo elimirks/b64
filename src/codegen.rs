@@ -27,31 +27,24 @@ enum Jump {
 }
 
 const PAGE_SIZE: i64 = 0x1000;
-// We need to pad after the program headers until this point, sadly.
-// It's due to how Linux uses mmap to read in the prog data.
-const PROGRAM_OFFSET: i64 = PAGE_SIZE;
 const ELF_HEADER_SIZE: i64 = 0x40;
 const PROGRAM_HEADER_SIZE: i64 = 0x38;
 const PROGRAM_HEADER_COUNT: i64 = 3;
 const SECTION_HEADER_SIZE: i64 = 0x40;
 const SECTION_HEADER_COUNT: i64 = 5;
-const SHTAB_SECTION_INDEX: i64 = 2;
+const SHTAB_SECTION_INDEX: i64 = 1;
+const VADDR_BASE: i64 = 0x010000;
 
 #[derive(Debug)]
 struct ElfContext {
     program_size: i64,
     data_size: i64,
     rodata_size: i64,
-    shstrtab_size: i64,
 }
 
 impl ElfContext {
     fn program_vaddr(&self) -> i64 {
         self.data_vaddr() + PAGE_SIZE * self.data_page_num()
-    }
-
-    fn program_page_num(&self) -> i64 {
-        ceil_to_page_size(self.program_size) / PAGE_SIZE
     }
 
     fn program_offset(&self) -> i64 {
@@ -71,7 +64,7 @@ impl ElfContext {
     }
 
     fn rodata_vaddr(&self) -> i64 {
-        0x400000
+        VADDR_BASE
     }
 
     fn rodata_page_num(&self) -> i64 {
@@ -82,12 +75,8 @@ impl ElfContext {
         PAGE_SIZE
     }
 
-    fn shstrtab_offset(&self) -> i64 {
-        self.program_offset() + self.program_size
-    }
-
     fn section_header_offset(&self) -> i64 {
-        self.shstrtab_offset() + self.shstrtab_size
+        PROGRAM_HEADER_SIZE * PROGRAM_HEADER_COUNT + ELF_HEADER_SIZE
     }
 }
 
@@ -2336,6 +2325,39 @@ fn elf_gen_section_headers(
     // Initially populate with the mandator null header
     let mut bytes = vec![0; SECTION_HEADER_SIZE as usize];
 
+    let shstrtab_bytes = "\0.shstrtab\0\
+                          .text\0\
+                          .rodata\0\
+                          .data\0
+                          .symtab\0
+                          .strtab\0".as_bytes();
+    let shstrtab_offset = c.section_header_offset() +
+        SECTION_HEADER_SIZE * SECTION_HEADER_COUNT - 1;
+
+    ///////////////////////
+    // .shstrtab section //
+    ///////////////////////
+    // sh_name: Offset to a string in .shstrtab section
+    append_le32_bytes(&mut bytes, 0x01);
+    // sh_type
+    append_le32_bytes(&mut bytes, 0x03);
+    // sh_flags
+    append_le64_bytes(&mut bytes, 0x00);
+    // sh_addr: Virtual address of the section in memory, for loaded sections
+    append_le64_bytes(&mut bytes, 0);
+    // sh_offset: Offset in the file image of this section
+    append_le64_bytes(&mut bytes, shstrtab_offset);
+    // sh_size: Size in bytes of the section in the file image
+    append_le64_bytes(&mut bytes, shstrtab_bytes.len() as i64);
+    // sh_link
+    append_le32_bytes(&mut bytes, 0);
+    // sh_info
+    append_le32_bytes(&mut bytes, 0);
+    // sh_addralign
+    append_le64_bytes(&mut bytes, 0);
+    // sh_entsize
+    append_le64_bytes(&mut bytes, 0);
+
     //////////////////////////
     // Program data section //
     //////////////////////////
@@ -2358,30 +2380,6 @@ fn elf_gen_section_headers(
     append_le32_bytes(&mut bytes, 0);
     // sh_addralign
     append_le64_bytes(&mut bytes, 1);
-    // sh_entsize
-    append_le64_bytes(&mut bytes, 0);
-
-    ///////////////////////
-    // .shstrtab section //
-    ///////////////////////
-    // sh_name: Offset to a string in .shstrtab section
-    append_le32_bytes(&mut bytes, 0x01);
-    // sh_type
-    append_le32_bytes(&mut bytes, 0x03);
-    // sh_flags
-    append_le64_bytes(&mut bytes, 0x00);
-    // sh_addr: Virtual address of the section in memory, for loaded sections
-    append_le64_bytes(&mut bytes, 0);
-    // sh_offset: Offset in the file image of this section
-    append_le64_bytes(&mut bytes, c.shstrtab_offset());
-    // sh_size: Size in bytes of the section in the file image
-    append_le64_bytes(&mut bytes, c.shstrtab_size);
-    // sh_link
-    append_le32_bytes(&mut bytes, 0);
-    // sh_info
-    append_le32_bytes(&mut bytes, 0);
-    // sh_addralign
-    append_le64_bytes(&mut bytes, 0);
     // sh_entsize
     append_le64_bytes(&mut bytes, 0);
 
@@ -2433,17 +2431,14 @@ fn elf_gen_section_headers(
     // sh_entsize
     append_le64_bytes(&mut bytes, 0);
 
-    bytes
-}
-
-fn elf_gen_shstrtab() -> Vec<u8> {
-    let mut bytes = vec![0];
     bytes.extend_from_slice(".shstrtab\0".as_bytes());
     bytes.extend_from_slice(".text\0".as_bytes());
     bytes.extend_from_slice(".rodata\0".as_bytes());
     bytes.extend_from_slice(".data\0".as_bytes());
     bytes.extend_from_slice(".symtab\0".as_bytes());
     bytes.extend_from_slice(".strtab\0".as_bytes());
+
+    bytes.extend(shstrtab_bytes);
     bytes
 }
 
@@ -2535,6 +2530,9 @@ fn gen(
     let main_offset = *fun_offsets.get("main").unwrap() + 9;
     // Generate the _start function
     // TODO: Code to initialize vec pointers in the data segment
+    // Better yet: compute them during data segment initialization
+    // We already know the vaddrs of the entire data segment, so we shouldn't
+    // have to use instruction relative addressing at all for vector data!!
     let mut all_instructions: Vec<u8> = vec![
         // mov    (%rsp),%rdi
         0x48, 0x8b, 0x3c, 0x24,
@@ -2572,7 +2570,9 @@ fn gen(
         }
     }
 
-    let shstrtab_bytes = elf_gen_shstrtab();
+    // TODO: We know the absolute addresses of data and rodata in advance!
+    // Meaning, we don't _have_ to link them in a single thread
+    // We can use absolute addressing instead of leaq
 
     // TODO: actually put something here
     let data_bytes = vec![42];
@@ -2582,18 +2582,21 @@ fn gen(
         program_size: all_instructions.len() as i64,
         data_size: data_bytes.len() as i64,
         rodata_size: rodata_bytes.len() as i64,
-        shstrtab_size: shstrtab_bytes.len() as i64,
     };
 
+    let elf_header = elf_gen_elf_header(&elf_context);
     let program_headers = elf_gen_program_headers(&elf_context);
     let section_headers = elf_gen_section_headers(&elf_context);
-    let elf_header = elf_gen_elf_header(&elf_context);
+    let header_size = elf_header.len() + program_headers.len() +
+        section_headers.len();
+    assert!(header_size <= PAGE_SIZE as usize);
 
     CompErr::from_io_res(w.write_all(&elf_header))?;
     CompErr::from_io_res(w.write_all(&program_headers))?;
+    CompErr::from_io_res(w.write_all(&section_headers))?;
 
     // rodata
-    let mut padding = PAGE_SIZE - elf_header.len() as i64 - program_headers.len() as i64;
+    let mut padding = PAGE_SIZE - header_size as i64;
     CompErr::from_io_res(w.write_all(&vec![0; padding as usize]))?;
     CompErr::from_io_res(w.write_all(&rodata_bytes))?;
 
@@ -2606,10 +2609,6 @@ fn gen(
     padding = (PAGE_SIZE - elf_context.data_size) % PAGE_SIZE;
     CompErr::from_io_res(w.write_all(&vec![0; padding as usize]))?;
     CompErr::from_io_res(w.write_all(&all_instructions))?;
-
-    // Section headers
-    CompErr::from_io_res(w.write_all(&shstrtab_bytes))?;
-    CompErr::from_io_res(w.write_all(&section_headers))?;
     Ok(())
 }
 
