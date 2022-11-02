@@ -2367,9 +2367,10 @@ fn gen(
         0x0f, 0x05,
     ];
 
+    let mut total_offset = 0;
     for (_, instructions, _, need_linking) in &mut guard.results {
         for (inst_index, symbol) in need_linking {
-            let inst_offset = offset_after_instruction(instructions, *inst_index as i64);
+            let inst_offset = total_offset + offset_after_instruction(instructions, *inst_index as i64);
             let opcodes = &mut instructions[*inst_index].1;
             opcodes.truncate(opcodes.len() - 4);
             let callee_offset = *fun_offsets.get(symbol).unwrap() as i64;
@@ -2380,6 +2381,7 @@ fn gen(
                 panic!("No opcodes for instruction: {:?}", instruction.0);
             }
             all_instructions.extend(&instruction.1);
+            total_offset += inst_len(&instruction);
         }
     }
 
