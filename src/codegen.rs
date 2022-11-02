@@ -40,6 +40,7 @@ struct ElfContext {
     program_size: i64,
     data_size: i64,
     rodata_size: i64,
+    shstrtab_size: i64,
 }
 
 impl ElfContext {
@@ -76,7 +77,11 @@ impl ElfContext {
     }
 
     fn section_header_offset(&self) -> i64 {
-        PROGRAM_HEADER_SIZE * PROGRAM_HEADER_COUNT + ELF_HEADER_SIZE
+        self.program_offset() + self.program_size
+    }
+
+    fn shstrtab_offset(&self) -> i64 {
+        ELF_HEADER_SIZE + PROGRAM_HEADER_SIZE * PROGRAM_HEADER_COUNT
     }
 }
 
@@ -141,6 +146,8 @@ enum ScopeEntry {
 
 struct FunContext<'a> {
     global_scope: &'a HashMap<String, ScopeEntry>,
+    str_vaddrs: &'a HashMap<usize, i64>,
+    data_vaddrs: &'a HashMap<String, i64>,
     /*
      * One HashMap for the entire function scope, for O(1) access
      * I thought about using a linked list of hashmaps...
@@ -162,9 +169,6 @@ struct FunContext<'a> {
     // List of instructions that require linking.
     // The linked instruction will always be last.
     inst_links: Vec<(usize, String)>,
-    // List of strings that require linking
-    // (instruction_index, string_id)
-    str_links: Vec<(usize, usize)>,
 }
 
 impl FunContext<'_> {
@@ -1740,10 +1744,11 @@ fn gen_expr(
             None => CompErr::err(pos, format!("Variable {} not in scope", name)),
         },
         Expr::Str(_, string_id) => {
-            instructions.push(("leaq string".to_string(), vec![
-               0x48, 0x8d, 0x05, 0x00, 0x00, 0x00, 0x00
-            ]));
-            c.str_links.push((instructions.len(), *string_id));
+            let str_vaddr = c.str_vaddrs.get(string_id).unwrap();
+            // mov ???,%rax
+            let mut opcodes = vec![0x48, 0xc7, 0xc0];
+            append_le32_bytes(&mut opcodes, *str_vaddr);
+            instructions.push(("leaq string".to_string(), opcodes));
             Ok((Loc::Register(Reg::Rax), RegSet::of(Reg::Rax)))
         }
         Expr::Assignment(pos, lhs, rhs) => gen_expr_ass(c, instructions, pos, lhs, rhs),
@@ -2309,17 +2314,10 @@ fn elf_gen_program_headers(c: &ElfContext) -> Vec<u8> {
 }
 
 fn elf_gen_section_headers(c: &ElfContext) -> Vec<u8> {
+    assert!(c.program_size != 0);
+
     // Initially populate with the mandator null header
     let mut bytes = vec![0; SECTION_HEADER_SIZE as usize];
-
-    let shstrtab_bytes = "\0.shstrtab\
-                          \0.text\
-                          \0.rodata\
-                          \0.data\
-                          \0.symtab\
-                          \0.strtab\0".as_bytes();
-    let shstrtab_offset = c.section_header_offset() +
-        SECTION_HEADER_SIZE * SECTION_HEADER_COUNT - 1;
 
     ///////////////////////
     // .shstrtab section //
@@ -2333,9 +2331,9 @@ fn elf_gen_section_headers(c: &ElfContext) -> Vec<u8> {
     // sh_addr: Virtual address of the section in memory, for loaded sections
     append_le64_bytes(&mut bytes, 0);
     // sh_offset: Offset in the file image of this section
-    append_le64_bytes(&mut bytes, shstrtab_offset);
+    append_le64_bytes(&mut bytes, c.shstrtab_offset());
     // sh_size: Size in bytes of the section in the file image
-    append_le64_bytes(&mut bytes, shstrtab_bytes.len() as i64);
+    append_le64_bytes(&mut bytes, c.shstrtab_size);
     // sh_link
     append_le32_bytes(&mut bytes, 0);
     // sh_info
@@ -2418,7 +2416,6 @@ fn elf_gen_section_headers(c: &ElfContext) -> Vec<u8> {
     // sh_entsize
     append_le64_bytes(&mut bytes, 0);
 
-    bytes.extend(shstrtab_bytes);
     bytes
 }
 
@@ -2426,7 +2423,7 @@ fn elf_gen_section_headers(c: &ElfContext) -> Vec<u8> {
 fn elf_gen_rodata(
     c: &ElfContext,
     strings: Vec<(usize, Vec<u8>)>,
-) -> (Vec<u8>, HashMap<usize, i64>) {
+) -> (Vec<u8>, Arc<HashMap<usize, i64>>) {
     let base_vaddr = c.rodata_vaddr();
     let mut bytes = vec![];
     let mut vaddrs = HashMap::<usize, i64>::new();
@@ -2435,13 +2432,13 @@ fn elf_gen_rodata(
         bytes.extend(string_bytes);
         bytes.push(0);
     }
-    (bytes, vaddrs)
+    (bytes, Arc::new(vaddrs))
 }
 
 fn elf_gen_data(
     c: &ElfContext,
     variables: Vec<RSVariable>,
-) -> (Vec<u8>, HashMap<String, i64>) {
+) -> (Vec<u8>, Arc<HashMap<String, i64>>) {
     let base_vaddr = c.data_vaddr();
     let mut bytes = vec![];
     let mut vaddrs = HashMap::<String, i64>::new();
@@ -2467,7 +2464,7 @@ fn elf_gen_data(
             },
         }
     }
-    (bytes, vaddrs)
+    (bytes, Arc::new(vaddrs))
 }
 
 /// Crappy function but will be removed eventually so I don't care
@@ -2493,6 +2490,24 @@ fn gen(
 
     let global_scope = root_prepass(&functions, &variables, defines)?;
 
+    let shstrtab_bytes = "\0.shstrtab\
+                          \0.text\
+                          \0.rodata\
+                          \0.data\
+                          \0.symtab\
+                          \0.strtab\0".as_bytes();
+    let shstrtab_size = shstrtab_bytes.len();
+    let mut elf_context = ElfContext{
+        rodata_size: 0,
+        data_size: 0,
+        program_size: 0,
+        shstrtab_size: shstrtab_size as i64,
+    };
+    let (rodata_bytes, rodata_vaddrs) = elf_gen_rodata(&elf_context, strings);
+    elf_context.rodata_size = rodata_bytes.len() as i64;
+    let (data_bytes, data_vaddrs) = elf_gen_data(&elf_context, variables);
+    elf_context.data_size = data_bytes.len() as i64;
+
     let pool = Arc::new((
         Mutex::new(CodeGenPool {
             running_fibers: 0,
@@ -2510,9 +2525,11 @@ fn gen(
     for _ in 0..thread_count {
         let th_pool_mutex = pool.clone();
         let th_global_scope = arc_global_scope.clone();
+        let th_rodata_vaddrs = rodata_vaddrs.clone();
+        let th_data_vaddrs = data_vaddrs.clone();
 
         handles.push(thread::spawn(move || {
-            codegen_fiber(th_global_scope, th_pool_mutex);
+            codegen_fiber(th_global_scope, th_rodata_vaddrs, th_data_vaddrs, th_pool_mutex);
         }))
     }
 
@@ -2576,31 +2593,18 @@ fn gen(
             total_offset += inst_len(&instruction);
         }
     }
-
-    // TODO: We know the absolute addresses of data and rodata in advance!
-    // Meaning, we don't _have_ to link them in a single thread
-    // We can use absolute addressing instead of leaq
-
-    let mut elf_context = ElfContext{
-        rodata_size: 0,
-        data_size: 0,
-        program_size: all_instructions.len() as i64,
-    };
-    let (rodata_bytes, rodata_vaddrs) = elf_gen_rodata(&elf_context, strings);
-    elf_context.rodata_size = rodata_bytes.len() as i64;
-    let (data_bytes, data_vaddrs) = elf_gen_data(&elf_context, variables);
-    elf_context.data_size = data_bytes.len() as i64;
+    elf_context.program_size = all_instructions.len() as i64;
 
     let elf_header = elf_gen_elf_header(&elf_context);
     let program_headers = elf_gen_program_headers(&elf_context);
     let section_headers = elf_gen_section_headers(&elf_context);
-    let header_size = elf_header.len() + program_headers.len() +
-        section_headers.len();
+    let header_size = elf_header.len() + program_headers.len() + shstrtab_size;
+
     assert!(header_size <= PAGE_SIZE as usize);
 
     CompErr::from_io_res(w.write_all(&elf_header))?;
     CompErr::from_io_res(w.write_all(&program_headers))?;
-    CompErr::from_io_res(w.write_all(&section_headers))?;
+    CompErr::from_io_res(w.write_all(&shstrtab_bytes))?;
 
     // rodata
     let mut padding = PAGE_SIZE - header_size as i64;
@@ -2616,6 +2620,9 @@ fn gen(
     padding = (PAGE_SIZE - elf_context.data_size) % PAGE_SIZE;
     CompErr::from_io_res(w.write_all(&vec![0; padding as usize]))?;
     CompErr::from_io_res(w.write_all(&all_instructions))?;
+
+    // Section headers must be at the end of the file, sadly
+    CompErr::from_io_res(w.write_all(&section_headers))?;
     Ok(())
 }
 
@@ -2634,6 +2641,8 @@ fn unpool_function(pool: &Arc<(Mutex<CodeGenPool>, Condvar)>) -> Option<RSFuncti
 
 fn codegen_fiber(
     global_scope: Arc<HashMap<String, ScopeEntry>>,
+    str_vaddrs: Arc<HashMap<usize, i64>>,
+    data_vaddrs: Arc<HashMap<String, i64>>,
     pool: Arc<(Mutex<CodeGenPool>, Condvar)>,
 ) {
     loop {
@@ -2641,6 +2650,8 @@ fn codegen_fiber(
             Some(fun) => {
                 let mut c = FunContext {
                     global_scope: &global_scope,
+                    str_vaddrs: &str_vaddrs,
+                    data_vaddrs: &data_vaddrs,
                     fun_scope: HashMap::new(),
                     block_vars: vec![],
                     local_var_locs: HashMap::new(),
@@ -2649,7 +2660,6 @@ fn codegen_fiber(
                     break_dest_stack: vec![],
                     label_indices: vec![],
                     inst_links: vec![],
-                    str_links: vec![],
                 };
                 match gen_fun(&mut c, &fun) {
                     Ok((instructions, fun_len)) => {
