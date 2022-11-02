@@ -2164,10 +2164,8 @@ fn root_prepass<'a>(
     functions: &Vec<RSFunction>,
     variables: &'a Vec<RSVariable>,
     defines: Vec<RSDefine>,
-) -> Result<(HashMap<String, ScopeEntry>, Vec<&'a Var>), CompErr> {
+) -> Result<HashMap<String, ScopeEntry>, CompErr> {
     let mut scope = HashMap::new();
-    let mut root_vars = Vec::<&Var>::new();
-
     for variable in variables {
         let var = &variable.var;
 
@@ -2175,11 +2173,8 @@ fn root_prepass<'a>(
         if scope.contains_key(name) {
             return CompErr::err(&variable.pos, format!("{} already in root scope", name));
         }
-        root_vars.push(var);
-
         scope.insert(name.clone(), ScopeEntry::Var(Loc::Data(name.clone())));
     }
-
     for function in functions {
         let name = &function.name;
         if scope.contains_key(name) {
@@ -2187,7 +2182,6 @@ fn root_prepass<'a>(
         }
         scope.insert(name.clone(), ScopeEntry::Fun(function.args.len()));
     }
-
     for define in defines {
         let name = &define.name;
         if scope.contains_key(name) {
@@ -2196,13 +2190,10 @@ fn root_prepass<'a>(
 
         scope.insert(name.clone(), ScopeEntry::Define(define.args, define.body));
     }
-
-    Ok((scope, root_vars))
+    Ok(scope)
 }
 
-fn elf_gen_elf_header(
-    c: &ElfContext
-) -> Vec<u8> {
+fn elf_gen_elf_header(c: &ElfContext) -> Vec<u8> {
     let mut bytes = vec![
         // Magic ELF header
         0x7f, 0x45, 0x4c, 0x46,
@@ -2248,9 +2239,7 @@ fn elf_gen_elf_header(
     bytes
 }
 
-fn elf_gen_program_headers(
-    c: &ElfContext
-) -> Vec<u8> {
+fn elf_gen_program_headers(c: &ElfContext) -> Vec<u8> {
     let mut bytes = vec![];
 
     ///////////////////
@@ -2319,18 +2308,16 @@ fn elf_gen_program_headers(
     bytes
 }
 
-fn elf_gen_section_headers(
-    c: &ElfContext
-) -> Vec<u8> {
+fn elf_gen_section_headers(c: &ElfContext) -> Vec<u8> {
     // Initially populate with the mandator null header
     let mut bytes = vec![0; SECTION_HEADER_SIZE as usize];
 
-    let shstrtab_bytes = "\0.shstrtab\0\
-                          .text\0\
-                          .rodata\0\
-                          .data\0
-                          .symtab\0
-                          .strtab\0".as_bytes();
+    let shstrtab_bytes = "\0.shstrtab\
+                          \0.text\
+                          \0.rodata\
+                          \0.data\
+                          \0.symtab\
+                          \0.strtab\0".as_bytes();
     let shstrtab_offset = c.section_header_offset() +
         SECTION_HEADER_SIZE * SECTION_HEADER_COUNT - 1;
 
@@ -2431,36 +2418,56 @@ fn elf_gen_section_headers(
     // sh_entsize
     append_le64_bytes(&mut bytes, 0);
 
-    bytes.extend_from_slice(".shstrtab\0".as_bytes());
-    bytes.extend_from_slice(".text\0".as_bytes());
-    bytes.extend_from_slice(".rodata\0".as_bytes());
-    bytes.extend_from_slice(".data\0".as_bytes());
-    bytes.extend_from_slice(".symtab\0".as_bytes());
-    bytes.extend_from_slice(".strtab\0".as_bytes());
-
     bytes.extend(shstrtab_bytes);
     bytes
 }
 
-/// Returns the string bytes, and a mapping from the string_id -> offset
+/// Returns the string bytes, and a mapping from the string_id -> vaddr
 fn elf_gen_rodata(
+    c: &ElfContext,
     strings: Vec<(usize, Vec<u8>)>,
 ) -> (Vec<u8>, HashMap<usize, i64>) {
+    let base_vaddr = c.rodata_vaddr();
     let mut bytes = vec![];
-    let mut offsets = HashMap::<usize, i64>::new();
+    let mut vaddrs = HashMap::<usize, i64>::new();
     for (string_id, string_bytes) in strings {
-        offsets.insert(string_id, bytes.len() as i64);
+        vaddrs.insert(string_id, base_vaddr + bytes.len() as i64);
         bytes.extend(string_bytes);
         bytes.push(0);
     }
-    (bytes, offsets)
+    (bytes, vaddrs)
 }
 
 fn elf_gen_data(
+    c: &ElfContext,
     variables: Vec<RSVariable>,
-) -> (Vec<u8>, HashMap<usize, i64>) {
-    // let mut bytes = vec![];
-    todo!()
+) -> (Vec<u8>, HashMap<String, i64>) {
+    let base_vaddr = c.data_vaddr();
+    let mut bytes = vec![];
+    let mut vaddrs = HashMap::<String, i64>::new();
+    for var in variables {
+        let vaddr = base_vaddr + bytes.len() as i64;
+        match var.var {
+            Var::Vec(name, capacity, values) => {
+                let uninitialized_num = capacity - values.len() as i64;
+                vaddrs.insert(name, vaddr);
+                // First element is actually a pointer to the first element
+                // This is so that global vectors behave the same as local vecs
+                append_le64_bytes(&mut bytes, vaddr + 8);
+                for value in values {
+                    append_le64_bytes(&mut bytes, value);
+                }
+                for _ in 0..uninitialized_num {
+                    append_le64_bytes(&mut bytes, 0);
+                }
+            },
+            Var::Single(name, value) => {
+                vaddrs.insert(name, vaddr);
+                append_le64_bytes(&mut bytes, value.unwrap_or(0));
+            },
+        }
+    }
+    (bytes, vaddrs)
 }
 
 /// Crappy function but will be removed eventually so I don't care
@@ -2484,7 +2491,7 @@ fn gen(
 ) -> Result<(), CompErr> {
     let mut w = BufWriter::new(writer);
 
-    let (global_scope, root_vars) = root_prepass(&functions, &variables, defines)?;
+    let global_scope = root_prepass(&functions, &variables, defines)?;
 
     let pool = Arc::new((
         Mutex::new(CodeGenPool {
@@ -2574,15 +2581,15 @@ fn gen(
     // Meaning, we don't _have_ to link them in a single thread
     // We can use absolute addressing instead of leaq
 
-    // TODO: actually put something here
-    let data_bytes = vec![42];
-    let rodata_bytes = vec![42];
-
-    let elf_context = ElfContext{
+    let mut elf_context = ElfContext{
+        rodata_size: 0,
+        data_size: 0,
         program_size: all_instructions.len() as i64,
-        data_size: data_bytes.len() as i64,
-        rodata_size: rodata_bytes.len() as i64,
     };
+    let (rodata_bytes, rodata_vaddrs) = elf_gen_rodata(&elf_context, strings);
+    elf_context.rodata_size = rodata_bytes.len() as i64;
+    let (data_bytes, data_vaddrs) = elf_gen_data(&elf_context, variables);
+    elf_context.data_size = data_bytes.len() as i64;
 
     let elf_header = elf_gen_elf_header(&elf_context);
     let program_headers = elf_gen_program_headers(&elf_context);

@@ -114,7 +114,10 @@ pub enum SwInner {
 #[derive(Debug)]
 // Singles & Vecs may have optional initial values
 pub enum Var {
+    // (name, capacity, values)
+    // values.len() doesn't have to equal the capacity!
     Vec(String, i64, Vec<i64>),
+    // (name, value)
     Single(String, Option<i64>),
 }
 
