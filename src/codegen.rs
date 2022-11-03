@@ -469,6 +469,7 @@ fn opcode_gen_cmp(
 }
 
 fn opcode_gen_mov(
+    c: &FunContext,
     lhs_loc: &Loc,
     rhs_loc: &Loc,
 ) -> Inst {
@@ -576,7 +577,14 @@ fn opcode_gen_mov(
             opcodes.push((lhs_reg.opcode_id() << 3) + rhs_reg.opcode_id());
             (format!("movq {},{}", lhs_loc, rhs_loc), opcodes)
         },
-        _ => (format!("movq {},{}", lhs_loc, rhs_loc), vec![])
+        (Loc::Data(name), rhs_loc @ Loc::Register(rhs_reg)) => {
+            let vaddr = c.data_vaddrs.get(name).unwrap();
+            let (_, mut opcodes) = opcode_gen_mov(c, &Loc::Immediate(*vaddr), rhs_loc);
+            let (_, load_opcodes) = opcode_gen_mov(c, &Loc::Indirect(*rhs_reg), rhs_loc);
+            opcodes.extend(load_opcodes);
+            (format!("load data"), opcodes)
+        },
+        _ => unimplemented!()
     }
 }
 
@@ -864,13 +872,14 @@ fn opcode_gen_neg(
 }
 
 fn gen_op_cmp(
+    c: &FunContext,
     instructions: &mut Vec<Inst>,
     op: &BinOp,
     lhs_loc: Loc,
     rhs_loc: Loc,
 ) -> (Loc, RegSet) {
     instructions.push(opcode_gen_cmp(&rhs_loc, &lhs_loc));
-    instructions.push(opcode_gen_mov(&Loc::Immediate(0), &lhs_loc));
+    instructions.push(opcode_gen_mov(c, &Loc::Immediate(0), &lhs_loc));
 
     if let Loc::Register(lhs_reg) = lhs_loc {
         instructions.push(opcode_gen_op_cmp(op, lhs_reg));
@@ -893,6 +902,7 @@ fn gen_op_single(
 }
 
 fn gen_op_shift(
+    c: &FunContext,
     instructions: &mut Vec<Inst>,
     is_left: bool,
     lhs_loc: Loc,
@@ -905,7 +915,7 @@ fn gen_op_shift(
         },
         _ => {
             // Required to use %cl register for non immediates during shifts
-            instructions.push(opcode_gen_mov(&rhs_loc, &Reg::Rcx.into()));
+            instructions.push(opcode_gen_mov(c, &rhs_loc, &Reg::Rcx.into()));
             instructions.push(opcode_gen_cl_shift(is_left, &lhs_loc));
             let used_registers = RegSet::of(Reg::Rcx);
             (lhs_loc, used_registers)
@@ -918,6 +928,7 @@ fn gen_op_shift(
  * @return (instructions, rhs_loc, used_registers)
  */
 fn gen_op_pre_float_op(
+    c: &FunContext,
     instructions: &mut Vec<Inst>,
     lhs_loc: Loc,
     init_rhs_loc: Loc,
@@ -929,7 +940,6 @@ fn gen_op_pre_float_op(
         init_rhs_loc,
         Loc::Register(Reg::Rax) | Loc::Register(Reg::Rdx) | Loc::Immediate(_)
     );
-
     // Move rhs to a new register if necessary
     let rhs_loc = if should_move_rhs {
         // Make sure we don't override LHS
@@ -937,20 +947,16 @@ fn gen_op_pre_float_op(
             Loc::Register(Reg::Rcx) => Reg::Rdi,
             _ => Reg::Rcx,
         };
-
         used_registers = used_registers.with(dest_reg);
-        instructions.push(opcode_gen_mov(&init_rhs_loc, &dest_reg.into()));
-
+        instructions.push(opcode_gen_mov(c, &init_rhs_loc, &dest_reg.into()));
         Loc::Register(dest_reg)
     } else {
         init_rhs_loc
     };
-
     match lhs_loc {
         Loc::Register(Reg::Rax) => {}
-        lhs_loc => instructions.push(opcode_gen_mov(&lhs_loc, &Reg::Rax.into())),
-    };
-
+        lhs_loc => instructions.push(opcode_gen_mov(c, &lhs_loc, &Reg::Rax.into())),
+    }
     (rhs_loc, used_registers)
 }
 
@@ -958,25 +964,45 @@ fn gen_op_pre_float_op(
  * Generate instructions to diving (or mod) two numbers
  * As per x86 idivq, the results always go to rax and rdx
  */
-fn gen_op_pre_div(instructions: &mut Vec<Inst>, lhs_loc: Loc, init_rhs_loc: Loc) -> RegSet {
-    let (rhs_loc, used_registers) = gen_op_pre_float_op(instructions, lhs_loc, init_rhs_loc);
-    instructions.push(opcode_gen_mov(&0.into(), &Reg::Rdx.into()));
+fn gen_op_pre_div(
+    c: &FunContext,
+    instructions: &mut Vec<Inst>,
+    lhs_loc: Loc,
+    init_rhs_loc: Loc
+) -> RegSet {
+    let (rhs_loc, used_registers) = gen_op_pre_float_op(c, instructions, lhs_loc, init_rhs_loc);
+    instructions.push(opcode_gen_mov(c, &0.into(), &Reg::Rdx.into()));
     instructions.push(opcode_gen_op_div(&rhs_loc));
     used_registers
 }
 
-fn gen_op_mod(instructions: &mut Vec<Inst>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
-    let used_registers = gen_op_pre_div(instructions, lhs_loc, rhs_loc);
+fn gen_op_mod(
+    c: &FunContext,
+    instructions: &mut Vec<Inst>,
+    lhs_loc: Loc,
+    rhs_loc: Loc
+) -> (Loc, RegSet) {
+    let used_registers = gen_op_pre_div(c, instructions, lhs_loc, rhs_loc);
     (Loc::Register(Reg::Rdx), used_registers)
 }
 
-fn gen_op_div(instructions: &mut Vec<Inst>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
-    let used_registers = gen_op_pre_div(instructions, lhs_loc, rhs_loc);
+fn gen_op_div(
+    c: &FunContext,
+    instructions: &mut Vec<Inst>,
+    lhs_loc: Loc,
+    rhs_loc: Loc
+) -> (Loc, RegSet) {
+    let used_registers = gen_op_pre_div(c, instructions, lhs_loc, rhs_loc);
     (Loc::Register(Reg::Rax), used_registers)
 }
 
-fn gen_op_mul(instructions: &mut Vec<Inst>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc, RegSet) {
-    let (rhs_loc, used_registers) = gen_op_pre_float_op(instructions, lhs_loc, rhs_loc);
+fn gen_op_mul(
+    c: &FunContext,
+    instructions: &mut Vec<Inst>,
+    lhs_loc: Loc,
+    rhs_loc: Loc
+) -> (Loc, RegSet) {
+    let (rhs_loc, used_registers) = gen_op_pre_float_op(c, instructions, lhs_loc, rhs_loc);
     instructions.push(opcode_gen_op_mul(&rhs_loc));
     (Loc::Register(Reg::Rax), used_registers)
 }
@@ -988,6 +1014,7 @@ fn gen_op_mul(instructions: &mut Vec<Inst>, lhs_loc: Loc, rhs_loc: Loc) -> (Loc,
  * @return (instructions, dest_loc, extra_registers)
  */
 fn gen_op_command(
+    c: &FunContext,
     instructions: &mut Vec<Inst>,
     op: &BinOp,
     lhs_loc: Loc,
@@ -996,20 +1023,20 @@ fn gen_op_command(
     match op {
         BinOp::Add => gen_op_single(instructions, "addq", op, lhs_loc, rhs_loc),
         BinOp::Sub => gen_op_single(instructions, "subq", op, lhs_loc, rhs_loc),
-        BinOp::Mod => gen_op_mod(instructions, lhs_loc, rhs_loc),
-        BinOp::Div => gen_op_div(instructions, lhs_loc, rhs_loc),
-        BinOp::Mul => gen_op_mul(instructions, lhs_loc, rhs_loc),
-        BinOp::ShiftRight => gen_op_shift(instructions, false, lhs_loc, rhs_loc),
-        BinOp::ShiftLeft => gen_op_shift(instructions, true, lhs_loc, rhs_loc),
+        BinOp::Mod => gen_op_mod(c, instructions, lhs_loc, rhs_loc),
+        BinOp::Div => gen_op_div(c, instructions, lhs_loc, rhs_loc),
+        BinOp::Mul => gen_op_mul(c, instructions, lhs_loc, rhs_loc),
+        BinOp::ShiftRight => gen_op_shift(c, instructions, false, lhs_loc, rhs_loc),
+        BinOp::ShiftLeft => gen_op_shift(c, instructions, true, lhs_loc, rhs_loc),
         BinOp::And => gen_op_single(instructions, "andq", op, lhs_loc, rhs_loc),
         BinOp::Or => gen_op_single(instructions, "orq", op, lhs_loc, rhs_loc),
         BinOp::Xor => gen_op_single(instructions, "xorq", op, lhs_loc, rhs_loc),
-        BinOp::Eq => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
-        BinOp::Ne => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
-        BinOp::Le => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
-        BinOp::Lt => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
-        BinOp::Ge => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
-        BinOp::Gt => gen_op_cmp(instructions, op, lhs_loc, rhs_loc),
+        BinOp::Eq => gen_op_cmp(c, instructions, op, lhs_loc, rhs_loc),
+        BinOp::Ne => gen_op_cmp(c, instructions, op, lhs_loc, rhs_loc),
+        BinOp::Le => gen_op_cmp(c, instructions, op, lhs_loc, rhs_loc),
+        BinOp::Lt => gen_op_cmp(c, instructions, op, lhs_loc, rhs_loc),
+        BinOp::Ge => gen_op_cmp(c, instructions, op, lhs_loc, rhs_loc),
+        BinOp::Gt => gen_op_cmp(c, instructions, op, lhs_loc, rhs_loc),
         BinOp::Assign(_) => panic!("Assignments should not be parsed as regular binop exprs"),
     }
 }
@@ -1068,7 +1095,7 @@ fn gen_pre_op(
         // If there are safe registers available, store the lhs there
         Some(dest_reg) => {
             used_registers = used_registers.with(dest_reg);
-            instructions.push(opcode_gen_mov(&lhs_loc, &dest_reg.into()));
+            instructions.push(opcode_gen_mov(c, &lhs_loc, &dest_reg.into()));
             instructions.append(&mut rhs_ins);
             Loc::Register(dest_reg)
         }
@@ -1092,7 +1119,7 @@ fn gen_pre_op(
             if lhs_in_reg {
                 instructions.push(opcode_gen_pop(&new_lhs_loc));
             } else {
-                instructions.push(opcode_gen_mov(&lhs_loc, &new_lhs_loc));
+                instructions.push(opcode_gen_mov(c, &lhs_loc, &new_lhs_loc));
             }
             new_lhs_loc
         }
@@ -1143,7 +1170,7 @@ fn gen_unary_op_post_incdec(
     let dest_reg = Reg::R11;
     let dest_loc = Loc::Register(dest_reg);
 
-    instructions.push(opcode_gen_mov(&expr_loc, &dest_loc));
+    instructions.push(opcode_gen_mov(c, &expr_loc, &dest_loc));
     instructions.push(opcode_gen_incdec(is_inc, &expr_loc));
     Ok((dest_loc, used_registers.with(dest_reg)))
 }
@@ -1165,7 +1192,7 @@ fn gen_unary_pre_op(
                     Reg::Rax
                 }
             };
-            instructions.push(opcode_gen_mov(&expr_loc, &dest_reg.into()));
+            instructions.push(opcode_gen_mov(c, &expr_loc, &dest_reg.into()));
             dest_reg
         }
     };
@@ -1217,10 +1244,8 @@ fn gen_bin_op(
 ) -> Result<(Loc, RegSet), CompErr> {
     let (lhs_loc, rhs_loc, used_registers) =
         gen_pre_op(c, instructions, lhs, rhs, registers_for_op(op))?;
-
     // Run the command!
-    let (op_loc, op_registers) = gen_op_command(instructions, op, lhs_loc, rhs_loc);
-
+    let (op_loc, op_registers) = gen_op_command(c, instructions, op, lhs_loc, rhs_loc);
     Ok((op_loc, used_registers.union(op_registers)))
 }
 
@@ -1398,7 +1423,7 @@ fn gen_call(
                 name
             }
             Some(ScopeEntry::Var(loc)) => {
-                instructions.push(opcode_gen_mov(loc, &Reg::Rax.into()));
+                instructions.push(opcode_gen_mov(c, loc, &Reg::Rax.into()));
                 "*%rax"
             }
             Some(ScopeEntry::Define(args, body)) => {
@@ -1412,7 +1437,7 @@ fn gen_call(
         callee_expr => {
             let (callee_loc, _) = gen_expr(c, instructions, callee_expr)?;
             if callee_loc != Loc::Register(Reg::Rax) {
-                instructions.push(opcode_gen_mov(&callee_loc, &Reg::Rax.into()));
+                instructions.push(opcode_gen_mov(c, &callee_loc, &Reg::Rax.into()));
             }
             "*%rax"
         }
@@ -1425,7 +1450,7 @@ fn gen_call(
         if param_loc.is_reg() {
             instructions.push(opcode_gen_pop(&Loc::Register(reg)));
         } else {
-            instructions.push(opcode_gen_mov(param_loc, &reg.into()));
+            instructions.push(opcode_gen_mov(c, param_loc, &reg.into()));
         }
     }
 
@@ -1541,11 +1566,11 @@ fn gen_dereference(
                     Reg::Rax
                 }
             };
-            instructions.push(opcode_gen_mov(&target_loc, &new_reg.into()));
+            instructions.push(opcode_gen_mov(c, &target_loc, &new_reg.into()));
             new_reg
         }
     };
-    instructions.push(opcode_gen_mov(&Loc::Indirect(dest_reg), &dest_reg.into()));
+    instructions.push(opcode_gen_mov(c, &Loc::Indirect(dest_reg), &dest_reg.into()));
     Ok((Loc::Register(dest_reg), used_registers))
 }
 
@@ -1570,7 +1595,7 @@ fn gen_expr_ass_rhs(
                 }
             };
 
-            instructions.push(opcode_gen_mov(&rhs_loc, &rhs_reg.into()));
+            instructions.push(opcode_gen_mov(c, &rhs_loc, &rhs_reg.into()));
             Ok((rhs_reg, used_registers))
         }
     }
@@ -1587,7 +1612,7 @@ fn gen_expr_ass(
 
     match c.find_in_scope(lhs_name) {
         Some(ScopeEntry::Var(lhs_loc)) => {
-            instructions.push(opcode_gen_mov(&rhs_reg.into(), lhs_loc));
+            instructions.push(opcode_gen_mov(c, &rhs_reg.into(), lhs_loc));
             Ok((lhs_loc.clone(), used_registers))
         }
         Some(ScopeEntry::Fun(_)) => CompErr::err(pos, "Cannot reassign a function".to_string()),
@@ -1615,7 +1640,7 @@ fn gen_expr_deref_ass(
         Some(safe_reg) => match lhs_loc {
             Loc::Register(lhs_reg) if safe_registers.contains(lhs_reg) => Some(lhs_reg),
             lhs_loc => {
-                instructions.push(opcode_gen_mov(&lhs_loc, &safe_reg.into()));
+                instructions.push(opcode_gen_mov(c, &lhs_loc, &safe_reg.into()));
                 used_registers = used_registers.with(safe_reg);
                 Some(safe_reg)
             }
@@ -1648,13 +1673,18 @@ fn gen_expr_deref_ass(
     // - instructions for both LHS and RHS are done
     // - The lhs address is at dest_reg
     // - The rhs value is at rhs_reg
-    instructions.push(opcode_gen_mov(&rhs_reg.into(), &Loc::Indirect(dest_reg)));
+    instructions.push(opcode_gen_mov(c, &rhs_reg.into(), &Loc::Indirect(dest_reg)));
     Ok((Loc::Register(rhs_reg), used_registers))
 }
 
 /// # Arguments
 /// * `dest_reg` - For values > 2^32, this is the reg that will be used.
-fn gen_int(instructions: &mut Vec<Inst>, signed: i64, dest_reg: Reg) -> (Loc, RegSet) {
+fn gen_int(
+    c: &FunContext,
+    instructions: &mut Vec<Inst>,
+    signed: i64,
+    dest_reg: Reg
+) -> (Loc, RegSet) {
     if is_32_bounded(signed) {
         (Loc::Immediate(signed), RegSet::empty())
     } else {
@@ -1663,7 +1693,7 @@ fn gen_int(instructions: &mut Vec<Inst>, signed: i64, dest_reg: Reg) -> (Loc, Re
         let lower = (unsigned & ((1 << 32) - 1)) as i64;
 
         // Since immediates can only be 32 bit ints at most
-        instructions.push(opcode_gen_mov(&upper.into(), &dest_reg.into()));
+        instructions.push(opcode_gen_mov(c, &upper.into(), &dest_reg.into()));
         instructions.push(opcode_gen_immediate_shift(true, &dest_reg.into(), 32));
 
         // addq doesn't support large immediate values... I know, this is gnarly
@@ -1673,7 +1703,7 @@ fn gen_int(instructions: &mut Vec<Inst>, signed: i64, dest_reg: Reg) -> (Loc, Re
             Reg::Rax => Reg::Rcx,
             _        => Reg::Rax,
         };
-        instructions.push(opcode_gen_mov(&lower.into(), &tmp_reg.into()));
+        instructions.push(opcode_gen_mov(c, &lower.into(), &tmp_reg.into()));
         instructions.push(opcode_gen_arithmetic(&BinOp::Add, "addq", &tmp_reg.into(), &dest_reg.into()));
 
         (Loc::Register(dest_reg), RegSet::of(dest_reg).with(tmp_reg))
@@ -1699,7 +1729,7 @@ fn gen_cond_expr(
     let (true_loc, true_used) = gen_expr(c, instructions, true_expr)?;
     used_registers = used_registers.union(true_used);
     if true_loc != dest_loc {
-        instructions.push(opcode_gen_mov(&true_loc, &dest_loc));
+        instructions.push(opcode_gen_mov(c, &true_loc, &dest_loc));
     }
     instructions.push(opcode_gen_jump(Jump::Jmp, false_end_label));
     c.label_indices[true_end_label] = instructions.len();
@@ -1707,7 +1737,7 @@ fn gen_cond_expr(
     let (false_loc, false_used) = gen_expr(c, instructions, false_expr)?;
     used_registers = used_registers.union(false_used);
     if false_loc != dest_loc {
-        instructions.push(opcode_gen_mov(&false_loc, &dest_loc));
+        instructions.push(opcode_gen_mov(c, &false_loc, &dest_loc));
     }
     c.label_indices[false_end_label] = instructions.len();
 
@@ -1723,7 +1753,7 @@ fn gen_expr(
     expr: &Expr,
 ) -> Result<(Loc, RegSet), CompErr> {
     match expr {
-        Expr::Int(_, value) => Ok(gen_int(instructions, *value, Reg::Rax)),
+        Expr::Int(_, value) => Ok(gen_int(c, instructions, *value, Reg::Rax)),
         Expr::Id(pos, name) => match c.find_in_scope(name) {
             Some(ScopeEntry::Var(loc)) => Ok((loc.clone(), RegSet::empty())),
             Some(ScopeEntry::Fun(_)) => CompErr::err(
@@ -1744,13 +1774,11 @@ fn gen_expr(
             None => CompErr::err(pos, format!("Variable {} not in scope", name)),
         },
         Expr::Str(_, string_id) => {
-            let str_vaddr = c.str_vaddrs.get(string_id).unwrap();
-            // mov ???,%rax
-            let mut opcodes = vec![0x48, 0xc7, 0xc0];
-            append_le32_bytes(&mut opcodes, *str_vaddr);
+            let vaddr = c.str_vaddrs.get(string_id).unwrap();
+            let (_, opcodes) = opcode_gen_mov(c, &Loc::Immediate(*vaddr), &Reg::Rax.into());
             instructions.push(("leaq string".to_string(), opcodes));
             Ok((Loc::Register(Reg::Rax), RegSet::of(Reg::Rax)))
-        }
+        },
         Expr::Assignment(pos, lhs, rhs) => gen_expr_ass(c, instructions, pos, lhs, rhs),
         Expr::DerefAssignment(_, lhs, rhs) => gen_expr_deref_ass(c, instructions, lhs, rhs),
         Expr::UnaryOperator(_, op, expr) => gen_unary_op(c, instructions, op, expr),
@@ -1773,7 +1801,7 @@ fn gen_return_expr(
 
     // If the location is already rax, we don't need to move!
     if loc != Loc::Register(Reg::Rax) {
-        instructions.push(opcode_gen_mov(&loc, &Reg::Rax.into()));
+        instructions.push(opcode_gen_mov(c, &loc, &Reg::Rax.into()));
     }
 
     instructions.push(("leave".to_string(), vec![0xc9]));
@@ -1909,7 +1937,7 @@ fn gen_switch(
     let cond_loc = match expr_loc {
         loc @ Loc::Register(_) => loc,
         other => {
-            instructions.push(opcode_gen_mov(&other, &Reg::Rax.into()));
+            instructions.push(opcode_gen_mov(c, &other, &Reg::Rax.into()));
             Loc::Register(Reg::Rax)
         }
     };
@@ -1953,7 +1981,7 @@ fn gen_switch(
                 }
                 used_case_values.insert(value);
 
-                let (case_loc, _) = gen_int(&mut body_inst, *value, case_reg);
+                let (case_loc, _) = gen_int(c, &mut body_inst, *value, case_reg);
                 let label = c.new_label();
                 case_label_indices.push(label);
                 c.label_indices[label] = body_inst.len();
@@ -2001,18 +2029,18 @@ fn gen_auto(
 
                 // The first value in the stack for a vector is a data pointer
                 instructions.push(opcode_gen_lea(&Loc::Stack(offset - size), Reg::Rax));
-                instructions.push(opcode_gen_mov(&Reg::Rax.into(), &dest_loc));
+                instructions.push(opcode_gen_mov(c, &Reg::Rax.into(), &dest_loc));
 
                 for (i, value) in initial.iter().enumerate() {
                     let val_dest_loc = Loc::Stack(offset - size + i as i64);
 
-                    let (val_loc, _) = gen_int(instructions, *value, Reg::Rax);
-                    instructions.push(opcode_gen_mov(&val_loc, &val_dest_loc));
+                    let (val_loc, _) = gen_int(c, instructions, *value, Reg::Rax);
+                    instructions.push(opcode_gen_mov(c, &val_loc, &val_dest_loc));
                 }
             }
             Var::Single(_, Some(value)) => {
-                let (val_loc, _) = gen_int(instructions, *value, Reg::Rax);
-                instructions.push(opcode_gen_mov(&val_loc, &dest_loc));
+                let (val_loc, _) = gen_int(c, instructions, *value, Reg::Rax);
+                instructions.push(opcode_gen_mov(c, &val_loc, &dest_loc));
             }
             Var::Single(_, None) => {}
         }
@@ -2120,7 +2148,7 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<(Vec<Inst>, i64)
     let mut instructions = vec![];
     // Save base pointer, since it's callee-saved
     instructions.push(opcode_gen_push(&Loc::Register(Reg::Rbp)));
-    instructions.push(opcode_gen_mov(&Reg::Rsp.into(), &Reg::Rbp.into()));
+    instructions.push(opcode_gen_mov(c, &Reg::Rsp.into(), &Reg::Rbp.into()));
 
     // Prepare initial stack memory
     alloc_args(c, &mut instructions, pos, args)?;
