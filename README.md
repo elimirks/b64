@@ -2,9 +2,9 @@ Compiler for the [B programming language](https://www.bell-labs.com/usr/dmr/www/
 
 It will only run on Linux x86_64 systems.
 
-To compile or run, you'll need to have the GNU assembler (`as`) and GNU linker (`ld`) installed.
+To compile or run, you do NOT need any GNU tools like `as` or `ld` anymore!
 
-The generated assembly isn't great, but it supports everything in the original B.
+The generated binary isn't great, but it supports everything in the original B.
 
 ## Using b64
 Run `-h` for help:
@@ -13,7 +13,6 @@ USAGE:
     ./target/release/b64 [OPTIONS] [INPUTS]
 OPTIONS:
     -h, --help     Print this message
-    -s             Compile to ASM, not into a binary
     -o <OUTPUT>    Write the output to the given path
     -r             Directly run instead of saving the binary
     --             Any args after '--' will pass through
@@ -126,6 +125,8 @@ To create a reference to a function, us the syntax `&fun`.
 ### UTF-8
 - It will mostly work inside comments (except for UTF-8 sequences with trailing `*/` bytes!).
 - It won't work anywhere else
-
+### Max binary size
+The max binary size is effectively 2^31. This is a constraint of Linux.
+Technically I think you can increase that by avoiding instruction-relative addressing, but then you're looking at some gnarly generated opcodes.
 ### SIMD
 Compile with `RUSTFLAGS='-C target-feature=+avx2'` to leverage SIMD in the lexer. It slightly improves throughput (by about 1% from my benchmarks).
