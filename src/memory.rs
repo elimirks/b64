@@ -70,29 +70,6 @@ impl Reg {
         }
     }
 
-    /// Get the extended low byte for this register
-    /// IMPORTANT: It returns the RAX for the low byte
-    pub fn low_byte(&self) -> &str {
-        match self {
-            Reg::Rax => "al",
-            Reg::Rbx => "bl",
-            Reg::Rcx => "cl",
-            Reg::Rdx => "dl",
-            Reg::Rdi => "dil",
-            Reg::Rsi => "sil",
-            Reg::Rbp => "bpl",
-            Reg::Rsp => "spl",
-            Reg::R8 => "r8b",
-            Reg::R9 => "r9b",
-            Reg::R10 => "r10b",
-            Reg::R11 => "r11b",
-            Reg::R12 => "r12b",
-            Reg::R13 => "r13b",
-            Reg::R14 => "r14b",
-            Reg::R15 => "r15b",
-        }
-    }
-
     pub fn for_arg_num(num: usize) -> Reg {
         match num {
             0 => Reg::Rdi,

@@ -986,11 +986,9 @@ fn parse_file(file_id: usize, path: PathBuf, parse_state: &Arc<(Mutex<ParseState
             guard.result.defines.append(&mut statements.defines);
             guard.result.file_paths.push((path_str, path));
 
-            let mut string_index = 0;
-            for string in strings {
+            for (string_index, string) in strings.into_iter().enumerate() {
                 let string_id = get_string_id(file_id, string_index);
                 guard.result.strings.push((string_id, string));
-                string_index += 1;
             }
         }
         Err(error) => {
