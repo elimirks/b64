@@ -10,7 +10,7 @@ use std::thread;
 use crate::ast::*;
 use crate::memory::*;
 use crate::parser::*;
-use crate::util::logical_cpu_count;
+//use crate::util::logical_cpu_count;
 
 // Represents an instruction in both ASM and Op Codes (WIP)
 type Inst = Vec<u8>;
@@ -61,6 +61,8 @@ impl Instructions {
         self.instructions.push(opcodes.clone());
         self.begin_instruction();
         self.opcodes.extend(opcodes);
+        // TODO: Remove this, it's just for sanity
+        assert!(self.instructions.len() == self.inst_offsets.len());
     }
 
     fn begin_instruction(&mut self) {
@@ -77,6 +79,7 @@ impl Instructions {
         for offset in other.inst_offsets.iter_mut() {
             *offset += base_inst_offset;
         }
+        self.inst_offsets.extend(other.inst_offsets);
         for inst_link in other.inst_links.iter_mut() {
             inst_link.0 += base_inst_offset;
         }
@@ -1632,12 +1635,12 @@ fn is_jump(inst: &Inst) -> bool {
 fn opcode_gen_jump(
     instructions: &mut Instructions,
     jump: Jump,
-    label: usize
+    label_id: usize
 ) {
+    instructions.inst_jumps.push((instructions.inst_count(), label_id));
     // Special snowflake
     if jump == Jump::Jmp {
-        let mut opcodes = vec![0xe9];
-        append_le32_bytes(&mut opcodes, label as i64);
+        let opcodes = vec![0xe9, 0x00, 0x00, 0x00, 0x00];
         instructions.add_inst(opcodes);
         return;
     }
@@ -1650,7 +1653,7 @@ fn opcode_gen_jump(
         Jump::Jge => 0x8d,
         Jump::Jg  => 0x8f,
     }];
-    append_le32_bytes(&mut opcodes, label as i64);
+    opcodes.extend_from_slice(&[0, 0, 0, 0]);
     instructions.add_inst(opcodes);
 }
 
@@ -2083,12 +2086,11 @@ fn gen_switch(
 
     let mut used_case_values = HashSet::new();
     let mut default_label: Option<usize> = None;
-    // TODO: Now that we store labels in a different instructions object...
-    // I think there will be bugs here.
-    // Specifically, we won't be able to read labels outside the scope
+    // FIXME: Now that we store labels in a different instructions object...
+    // There is a bug here with calling `break` in a switch.
+    // Specifically, we won't be able to read labels outside the scope.
     // Solution 1) Don't use `append` (ideal)
     // Solution 2) Somehow have a base intruction reference perhaps
-    // Solution 3) Nothing! There may not actually be any bugs here
     let mut body_inst = Instructions::new();
 
     let switch_end_label = instructions.new_label();
@@ -2127,10 +2129,10 @@ fn gen_switch(
     }
     instructions.break_dest_stack.pop();
 
-    let _ = match default_label {
+    match default_label {
         Some(label) => opcode_gen_jump(instructions, Jump::Jmp, label),
         None => opcode_gen_jump(instructions, Jump::Jmp, switch_end_label),
-    };
+    }
 
     // Default jump point
     // FIXME: I don't _think_ we need this, due to the Instructions.append fn
@@ -2680,7 +2682,9 @@ fn gen(
         Condvar::new(),
     ));
 
-    let thread_count = logical_cpu_count();
+    // FIXME:
+    //let thread_count = logical_cpu_count();
+    let thread_count = 1;
     let arc_global_scope = Arc::new(global_scope);
 
     let mut handles = Vec::with_capacity(thread_count);
