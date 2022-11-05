@@ -1,7 +1,12 @@
 #import "./assets/stdlib.b";
 
 /* TODO: Simplify once we have more sane stdlib functions for listing dirs */
-main() {
+main(argc, argv) {
+    if (argc != 2) {
+        printf("Usage: %s path/to/b64*n", argv[0]);
+        exit(1);
+    }
+
     auto test_dir;
     test_dir = "./test";
 
@@ -40,7 +45,7 @@ main() {
                 printf("Running %s*n", abs_path);
                 print_divider(8 + strlen(abs_path));
 
-                if (system("./target/debug/b64", "-r", abs_path, 0) != 0) {
+                if (system(argv[1], "-r", abs_path, 0) != 0) {
                    panic("Test failed");
                 }
                 free(abs_path);
