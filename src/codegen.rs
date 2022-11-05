@@ -1613,9 +1613,12 @@ fn gen_reference(
             CompErr::err(pos, format!("Variable cannot be at {:?}!", other))
         }
         Some(ScopeEntry::Fun(_)) => {
-            // let dest_reg = Reg::Rax;
-            // Ok((Loc::Register(dest_reg), RegSet::of(dest_reg)))
-            todo!(); // idk if this is ever actually used
+            // FIXME:
+            instructions.fun_links.push((instructions.inst_count(), name.clone()));
+            instructions.begin_instruction();
+            instructions.opcodes.extend_from_slice(&[0x48, 0xc7, 0xc0, 0, 0, 0, 0]);
+            let dest_reg = Reg::Rax;
+            Ok((Loc::Register(dest_reg), RegSet::of(dest_reg)))
         }
         Some(ScopeEntry::Define(_, _)) => {
             CompErr::err(pos, "#define value cannot be referenced".to_string())
@@ -2592,6 +2595,14 @@ fn elf_gen_data(
     (bytes, Arc::new(vaddrs))
 }
 
+fn paddng_for_size(size: i64) -> i64 {
+    if size % PAGE_SIZE == 0 {
+        0
+    } else {
+        PAGE_SIZE - (size % PAGE_SIZE)
+    }
+}
+
 fn gen(
     strings: Vec<(usize, Vec<u8>)>,
     functions: Vec<RSFunction>,
@@ -2675,8 +2686,8 @@ fn gen(
         (main_offset >> 8) as u8, 
         (main_offset >> (8*2)) as u8, 
         (main_offset >> (8*3)) as u8, 
-        // mov    %al,%dil
-        0x40, 0x88, 0xc7,
+        // mov    %rax,%rdi
+        0x48, 0x89, 0xc7,
         // mov    $0x3c,%rax
         0x48, 0x31, 0xc0, 0xb0, 0x3c,
         // syscall
@@ -2718,12 +2729,12 @@ fn gen(
     CompErr::from_io_res(w.write_all(&rodata_bytes))?;
 
     // data
-    padding = PAGE_SIZE - (elf_context.rodata_size % PAGE_SIZE);
+    padding = paddng_for_size(elf_context.rodata_size);
     CompErr::from_io_res(w.write_all(&vec![0; padding as usize]))?;
     CompErr::from_io_res(w.write_all(&data_bytes))?;
 
     // text (opcodes)
-    padding = PAGE_SIZE - (elf_context.data_size % PAGE_SIZE);
+    padding = paddng_for_size(elf_context.data_size);
     CompErr::from_io_res(w.write_all(&vec![0; padding as usize]))?;
     CompErr::from_io_res(w.write_all(&all_instructions))?;
 
