@@ -17,11 +17,14 @@ struct Instructions {
     // New method
     opcodes: Vec<u8>,
     inst_offsets: Vec<usize>,
-    // List of instructions that require linking.
+    // List of instructions that require linking to functions.
     // The linked instruction will always be last.
-    // Practically, this means all the `call` instructions
+    // Exmaple instructions that need function linking:
+    // For some function `foo`:
+    // `call foo`
+    // `mov $foo,%rax`
     // Stores (inst_index, callee_name)
-    inst_links: Vec<(usize, String)>,
+    fun_links: Vec<(usize, String)>,
     // List of jump instructions that need linking
     // Stores (inst_index, label_index)
     inst_jumps: Vec<(usize, usize)>,
@@ -41,7 +44,7 @@ impl Instructions {
             instructions: vec![],
             opcodes: vec![],
             inst_offsets: vec![],
-            inst_links: vec![],
+            fun_links: vec![],
             inst_jumps: vec![],
             label_indices: vec![],
             labels: HashMap::new(),
@@ -54,8 +57,6 @@ impl Instructions {
         self.instructions.push(opcodes.clone());
         self.begin_instruction();
         self.opcodes.extend(opcodes);
-        // TODO: Remove this, it's just for sanity
-        assert!(self.instructions.len() == self.inst_offsets.len());
     }
 
     fn begin_instruction(&mut self) {
@@ -66,17 +67,18 @@ impl Instructions {
     // Consumes `other`
     fn append(&mut self, mut other: Instructions) {
         let base_inst_offset = self.instructions.len();
+        let base_opcode_offset = self.opcodes.len();
         let base_label_offset = self.label_indices.len();
         self.instructions.extend(other.instructions.clone());
         self.opcodes.extend(&other.opcodes);
         for offset in other.inst_offsets.iter_mut() {
-            *offset += base_inst_offset;
+            *offset += base_opcode_offset;
         }
         self.inst_offsets.extend(other.inst_offsets);
-        for inst_link in other.inst_links.iter_mut() {
+        for inst_link in other.fun_links.iter_mut() {
             inst_link.0 += base_inst_offset;
         }
-        self.inst_links.extend(other.inst_links);
+        self.fun_links.extend(other.fun_links);
         for inst_jump in other.inst_jumps.iter_mut() {
             inst_jump.0 += base_inst_offset;
             inst_jump.1 += base_label_offset;
@@ -1565,7 +1567,7 @@ fn gen_call(
     if callee == "*%rax" {
         instructions.add_inst(vec![0xff, 0xd0])
     } else {
-        instructions.inst_links.push((instructions.inst_count(), callee.to_string()));
+        instructions.fun_links.push((instructions.inst_count(), callee.to_string()));
         instructions.add_inst(vec![0xe8, 0, 0, 0, 0]);
     }
     if params.len() > 6 {
@@ -2092,11 +2094,17 @@ fn gen_switch(
             SwInner::Statement(_) => {},
         }
     }
+    // Default jump point
+    let switch_end_label = instructions.new_label();
+    match default_label {
+        Some(label) => opcode_gen_jump(instructions, Jump::Jmp, label),
+        None => opcode_gen_jump(instructions, Jump::Jmp, switch_end_label),
+    }
+
     // Reverse so we can just pop 'em off
     case_labels.reverse();
 
     // Step 2) Populate switch body
-    let switch_end_label = instructions.new_label();
     instructions.break_dest_stack.push(switch_end_label);
     for inner in body {
         match inner {
@@ -2113,12 +2121,6 @@ fn gen_switch(
         }
     }
     instructions.break_dest_stack.pop();
-
-    // Default jump point
-    match default_label {
-        Some(label) => opcode_gen_jump(instructions, Jump::Jmp, label),
-        None => opcode_gen_jump(instructions, Jump::Jmp, switch_end_label),
-    }
     instructions.label_indices[switch_end_label] = instructions.inst_count();
     Ok(())
 }
@@ -2268,6 +2270,59 @@ fn has_trailing_ret(stmt: &Statement) -> bool {
     }
 }
 
+fn link_jumps(instructions: &mut Instructions) {
+    for (inst_index, label_index) in instructions.inst_jumps.iter() {
+        // Since we always must have a trailing ret, the +1 will never overflow
+        let jump_from_opcode = instructions.inst_offsets[*inst_index + 1];
+        let jump_to_inst = instructions.label_indices[*label_index];
+        let jump_to_opcode = instructions.inst_offsets[jump_to_inst];
+        let jump_dist = jump_to_opcode as i64 - jump_from_opcode as i64;
+
+        // Populate legacy instructions
+        let inst = &mut instructions.instructions[*inst_index];
+        if inst[0] == 0xe9 {
+            insert_le32_bytes(&mut inst[1..], jump_dist);
+        } else {
+            insert_le32_bytes(&mut inst[2..], jump_dist);
+        }
+
+        // Populate opcode list (new method)
+        let inst_new_index = instructions.inst_offsets[*inst_index];
+        if instructions.opcodes[inst_new_index] == 0xe9 {
+            insert_le32_bytes(&mut instructions.opcodes[inst_new_index + 1..], jump_dist);
+        } else {
+            insert_le32_bytes(&mut instructions.opcodes[inst_new_index + 2..], jump_dist);
+        }
+    }
+}
+
+fn validate_instructions(
+    instructions: &Instructions
+) {
+    // First off, check that the lengths line up
+    let mut legacy_len = 0;
+    for (_, ops) in instructions.instructions.iter().enumerate() {
+        legacy_len += ops.len();
+    }
+    assert!(legacy_len == instructions.opcodes.len());
+
+    // Next, make sure indices are increasing
+    let mut previous_off = -1;
+    for offset in instructions.inst_offsets.iter() {
+        assert!(*offset as i64 > previous_off);
+        previous_off = *offset as i64;
+    }
+
+    // Last, check that all the opcodes are identical
+    for (index, ops) in instructions.instructions.iter().enumerate() {
+        let offset = instructions.inst_offsets[index];
+        for (i, op) in ops.iter().enumerate() {
+            let new_op = instructions.opcodes[offset + i];
+            assert!(*op == new_op);
+        }
+    }
+}
+
 /// Returns the function instructions & number of bytes in the function
 fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Instructions, CompErr> {
     let pos = &function.pos;
@@ -2295,30 +2350,8 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Instructions, Co
         gen_return(&mut instructions);
     }
     c.drop_scope();
-
-    for (inst_index, label_index) in instructions.inst_jumps.iter() {
-        // FIXME: Figure out if this +1 introduces a bug
-        let jump_from_opcode = instructions.inst_offsets[*inst_index + 1];
-        let jump_to_inst = instructions.label_indices[*label_index];
-        let jump_to_opcode = instructions.inst_offsets[jump_to_inst];
-        let jump_dist = jump_to_opcode as i64 - jump_from_opcode as i64;
-
-        // Populate legacy instructions
-        let inst = &mut instructions.instructions[*inst_index];
-        if inst[0] == 0xe9 {
-            insert_le32_bytes(&mut inst[1..], jump_dist);
-        } else {
-            insert_le32_bytes(&mut inst[2..], jump_dist);
-        }
-
-        // Populate opcode list (new method)
-        let inst_new_index = instructions.inst_offsets[*inst_index];
-        if instructions.opcodes[inst_new_index] == 0xe9 {
-            insert_le32_bytes(&mut instructions.opcodes[inst_new_index + 1..], jump_dist);
-        } else {
-            insert_le32_bytes(&mut instructions.opcodes[inst_new_index + 2..], jump_dist);
-        }
-    }
+    link_jumps(&mut instructions);
+    validate_instructions(&instructions);
     Ok(instructions)
 }
 
@@ -2705,18 +2738,12 @@ fn gen(
     let mut inst_offset = 0;
     for (fun_name, instructions) in &mut guard.results {
         fun_offsets.insert(fun_name.clone(), inst_offset);
-        for instruction in instructions.instructions.iter() {
-            inst_offset += instruction.len();
-        }
+        inst_offset += instructions.opcodes.len();
     }
 
-    // +9 since that's the number of bytes past the main call in _start
-    let main_offset = *fun_offsets.get("main").unwrap() + 9;
     // Generate the _start function
-    // TODO: Code to initialize vec pointers in the data segment
-    // Better yet: compute them during data segment initialization
-    // We already know the vaddrs of the entire data segment, so we shouldn't
-    // have to use instruction relative addressing at all for vector data!!
+    // +offset since that's the number of bytes past the main call in _start
+    let main_offset = *fun_offsets.get("main").unwrap() + 10;
     let mut all_instructions: Vec<u8> = vec![
         // mov    (%rsp),%rdi
         0x48, 0x8b, 0x3c, 0x24,
@@ -2728,8 +2755,8 @@ fn gen(
         (main_offset >> 8) as u8, 
         (main_offset >> (8*2)) as u8, 
         (main_offset >> (8*3)) as u8, 
-        // mov    %al,%bh
-        0x88, 0xc7,
+        // mov    %al,%dil
+        0x40, 0x88, 0xc7,
         // mov    $0x3c,%rax
         0x48, 0x31, 0xc0, 0xb0, 0x3c,
         // syscall
@@ -2738,14 +2765,9 @@ fn gen(
 
     let mut total_offset = 0;
     for (_, instructions) in &mut guard.results {
-        for (inst_index, symbol) in instructions.inst_links.iter() {
+        for (inst_index, symbol) in instructions.fun_links.iter() {
             let callee_offset = *fun_offsets.get(symbol).unwrap() as i64;
             let inst_offset = total_offset + offset_after_instruction(instructions, *inst_index as i64);
-            // FIXME: Something jank is going on here... with instruction offsets
-            // Idk if I care enough to fix it, since I'm going to change this soon anyways
-            // println!("a. {:?}", instructions[*inst_index-1]);
-            // println!("b. {:?}", instructions[*inst_index-0]);
-            // println!("c. {:?}", instructions[*inst_index+1]);
             let instruction = &mut instructions.instructions[*inst_index];
             if instruction.is_empty() {
                 panic!("No opcodes for instruction: {:?}", instruction);
@@ -2754,12 +2776,9 @@ fn gen(
             append_le32_bytes(instruction, callee_offset - inst_offset);
         }
         for instruction in instructions.instructions.iter() {
-            if instruction.is_empty() {
-                panic!("No opcodes for instruction: {:?}", instruction);
-            }
             all_instructions.extend(instruction.as_slice());
-            total_offset += instruction.len() as i64;
         }
+        total_offset += instructions.opcodes.len() as i64;
     }
     elf_context.program_size = all_instructions.len() as i64;
 

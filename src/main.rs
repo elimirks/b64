@@ -8,6 +8,8 @@ mod util;
 use std::env;
 use std::fs;
 use std::fs::File;
+use std::fs::Permissions;
+use std::os::unix::prelude::PermissionsExt;
 use std::process::Command;
 
 use codegen::generate;
@@ -56,8 +58,9 @@ fn main() {
 
 fn compile(input_paths: &Vec<String>, output_path: &String) {
     let parse_result = parse_or_die(input_paths);
-    // Stream the assembly code straight into GNU assembler
     generate(parse_result, &mut File::create(output_path).unwrap());
+    fs::set_permissions(output_path, Permissions::from_mode(0o755))
+        .expect("Couldn't set executable permissions");
 }
 
 fn parse_opts() -> Opts {
