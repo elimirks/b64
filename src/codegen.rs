@@ -9,7 +9,7 @@ use std::thread;
 use crate::ast::*;
 use crate::memory::*;
 use crate::parser::*;
-//use crate::util::logical_cpu_count;
+use crate::util::logical_cpu_count;
 
 struct Instructions {
     // New method
@@ -2631,9 +2631,7 @@ fn gen(
         Condvar::new(),
     ));
 
-    // FIXME:
-    //let thread_count = logical_cpu_count();
-    let thread_count = 1;
+    let thread_count = logical_cpu_count();
     let arc_global_scope = Arc::new(global_scope);
 
     let mut handles = Vec::with_capacity(thread_count);
@@ -2720,12 +2718,12 @@ fn gen(
     CompErr::from_io_res(w.write_all(&rodata_bytes))?;
 
     // data
-    padding = (PAGE_SIZE - elf_context.rodata_size) % PAGE_SIZE;
+    padding = PAGE_SIZE - (elf_context.rodata_size % PAGE_SIZE);
     CompErr::from_io_res(w.write_all(&vec![0; padding as usize]))?;
     CompErr::from_io_res(w.write_all(&data_bytes))?;
 
     // text (opcodes)
-    padding = (PAGE_SIZE - elf_context.data_size) % PAGE_SIZE;
+    padding = PAGE_SIZE - (elf_context.data_size % PAGE_SIZE);
     CompErr::from_io_res(w.write_all(&vec![0; padding as usize]))?;
     CompErr::from_io_res(w.write_all(&all_instructions))?;
 
