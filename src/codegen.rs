@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::convert::TryInto;
 use std::io::BufWriter;
 use std::io::Write;
 use std::sync::Condvar;
@@ -11,9 +10,6 @@ use crate::ast::*;
 use crate::memory::*;
 use crate::parser::*;
 //use crate::util::logical_cpu_count;
-
-// Represents an instruction in both ASM and Op Codes (WIP)
-type Inst = Vec<u8>;
 
 struct Instructions {
     // Legacy method
@@ -35,8 +31,6 @@ struct Instructions {
     // Maps from visible label name to label_index
     // Only used for semantic B labels, not regular jumps
     labels: HashMap<String, usize>,
-    // NOTE: This might not be necessary
-    label_counter: usize,
     // Stack of end labels to tell the B semantic break where to jump to
     break_dest_stack: Vec<usize>,
 }
@@ -51,7 +45,6 @@ impl Instructions {
             inst_jumps: vec![],
             label_indices: vec![],
             labels: HashMap::new(),
-            label_counter: 0,
             break_dest_stack: vec![],
         }
     }
@@ -97,16 +90,16 @@ impl Instructions {
         }
     }
 
+    // Returns the index of the label
+    // The actual value is set when the label is generated as an instruction
     fn new_label(&mut self) -> usize {
-        let index = self.label_counter;
-        // Actual value is set when the label is generated as an instruction
+        let index = self.label_indices.len();
         self.label_indices.push(0);
-        self.label_counter += 1;
         index
     }
 
     fn inst_count(&self) -> usize {
-        return self.instructions.len();
+        self.instructions.len()
     }
 }
 
@@ -183,27 +176,6 @@ impl ElfContext {
 fn ceil_to_page_size(n: i64) -> i64 {
     let page_mask = PAGE_SIZE - 1;
     (n + page_mask) & (!page_mask)
-}
-
-/// Get the tail of an instruction (32 bytes) as a usize value
-fn inst_32_tail(inst: &Inst) -> usize {
-    u32::from_le_bytes(inst[inst.len() - 4..].try_into().unwrap()) as usize
-}
-
-// Calculate the byte offset for the given instruction index
-fn inst_offset(
-    instructions: &Instructions,
-    mut inst_index: usize,
-) -> i64 {
-    let mut offset = 0;
-    for inst in instructions.instructions.iter() {
-        if inst_index == 0 {
-            break;
-        }
-        offset += inst.len();
-        inst_index -= 1;
-    }
-    offset as i64
 }
 
 struct CodeGenPool {
@@ -373,6 +345,17 @@ fn append_le32_bytes(
     vector.push((value >> 8) as u8);
     vector.push((value >> (8*2)) as u8);
     vector.push((value >> (8*3)) as u8);
+}
+
+fn insert_le32_bytes(
+    s: &mut [u8],
+    value: i64,
+) {
+    assert!(is_32_bounded(value));
+    s[0] = value as u8;
+    s[1] = (value >> 8) as u8;
+    s[2] = (value >> (8*2)) as u8;
+    s[3] = (value >> (8*3)) as u8;
 }
 
 fn append_le64_bytes(
@@ -1620,16 +1603,6 @@ fn opcode_gen_lea(
     instructions.add_inst(opcodes);
 }
 
-fn is_jump(inst: &Inst) -> bool {
-    if inst[0] == 0xe9 {
-        true
-    } else if inst[0] == 0x0f {
-        matches!(inst[1], 0x85 | 0x84 | 0x8e | 0x8c | 0x8d | 0x8f)
-    } else {
-        false
-    }
-}
-
 // NOTE: The target jump location is actually the index in label_indices
 // The proper relative jump offset is added at the end of gen_fun
 fn opcode_gen_jump(
@@ -2086,16 +2059,9 @@ fn gen_switch(
 
     let mut used_case_values = HashSet::new();
     let mut default_label: Option<usize> = None;
-    // FIXME: Now that we store labels in a different instructions object...
-    // There is a bug here with calling `break` in a switch.
-    // Specifically, we won't be able to read labels outside the scope.
-    // Solution 1) Don't use `append` (ideal)
-    // Solution 2) Somehow have a base intruction reference perhaps
-    let mut body_inst = Instructions::new();
+    let mut case_labels: Vec<usize> = vec![];
 
-    let switch_end_label = instructions.new_label();
-
-    instructions.break_dest_stack.push(switch_end_label);
+    // Step 1) Populate jump headers & create labels
     for inner in body {
         match inner {
             SwInner::Default(pos) => {
@@ -2105,8 +2071,7 @@ fn gen_switch(
                         "`default` label is already defined in switch".to_string(),
                     );
                 }
-                let label = body_inst.new_label();
-                body_inst.label_indices[label] = body_inst.instructions.len();
+                let label = instructions.new_label();
                 default_label = Some(label);
             }
             SwInner::Case(pos, value) => {
@@ -2117,29 +2082,43 @@ fn gen_switch(
                     );
                 }
                 used_case_values.insert(value);
-
-                let (case_loc, _) = gen_int(c, &mut body_inst, *value, case_reg);
-                let label = body_inst.new_label();
-                body_inst.label_indices[label] = body_inst.instructions.len();
+                let label = instructions.new_label();
+                case_labels.push(label);
+                // Jump header
+                let (case_loc, _) = gen_int(c, instructions, *value, case_reg);
                 opcode_gen_cmp(c, instructions, &case_loc, &cond_loc);
                 opcode_gen_jump(instructions, Jump::Je, label);
             }
-            SwInner::Statement(body) => gen_statement(c, &mut body_inst, body)?,
+            SwInner::Statement(_) => {},
+        }
+    }
+    // Reverse so we can just pop 'em off
+    case_labels.reverse();
+
+    // Step 2) Populate switch body
+    let switch_end_label = instructions.new_label();
+    instructions.break_dest_stack.push(switch_end_label);
+    for inner in body {
+        match inner {
+            SwInner::Default(_) => {
+                // It must exist
+                let label = default_label.unwrap();
+                instructions.label_indices[label] = instructions.inst_count();
+            }
+            SwInner::Case(_, _) => {
+                let label = case_labels.pop().unwrap();
+                instructions.label_indices[label] = instructions.inst_count();
+            }
+            SwInner::Statement(body) => gen_statement(c, instructions, body)?,
         }
     }
     instructions.break_dest_stack.pop();
 
+    // Default jump point
     match default_label {
         Some(label) => opcode_gen_jump(instructions, Jump::Jmp, label),
         None => opcode_gen_jump(instructions, Jump::Jmp, switch_end_label),
     }
-
-    // Default jump point
-    // FIXME: I don't _think_ we need this, due to the Instructions.append fn
-    // for index in case_label_indices {
-    //     c.label_indices[index] += instructions.len();
-    // }
-    instructions.append(body_inst);
     instructions.label_indices[switch_end_label] = instructions.inst_count();
     Ok(())
 }
@@ -2307,22 +2286,27 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Instructions, Co
     }
     c.drop_scope();
 
-    // Put proper relative jump offsets onto jump instructions.
-    // Initially, we populate with label indexes, since we don't know where a
-    // label will be until the entire function is generated.
-    // TODO: Shrink jump instructions to 2-byte alternative when possible
-    let mut label_offsets = vec![];
-    for label in &instructions.label_indices {
-        label_offsets.push(inst_offset(&instructions, *label));
-    }
-    let mut inst_offset = 0;
-    for inst in instructions.instructions.iter_mut() {
-        inst_offset += inst.len() as i64;
-        if is_jump(inst) {
-            let label_index = inst_32_tail(inst);
-            inst.truncate(inst.len() - 4);
-            let label_offset = label_offsets[label_index];
-            append_le32_bytes(inst, label_offset - inst_offset);
+    for (inst_index, label_index) in instructions.inst_jumps.iter() {
+        // FIXME: Figure out if this +1 introduces a bug
+        let jump_from_opcode = instructions.inst_offsets[*inst_index + 1];
+        let jump_to_inst = instructions.label_indices[*label_index];
+        let jump_to_opcode = instructions.inst_offsets[jump_to_inst];
+        let jump_dist = jump_to_opcode as i64 - jump_from_opcode as i64;
+
+        // Populate legacy instructions
+        let inst = &mut instructions.instructions[*inst_index];
+        if inst[0] == 0xe9 {
+            insert_le32_bytes(&mut inst[1..], jump_dist);
+        } else {
+            insert_le32_bytes(&mut inst[2..], jump_dist);
+        }
+
+        // Populate opcode list (new method)
+        let inst_new_index = instructions.inst_offsets[*inst_index];
+        if instructions.opcodes[inst_new_index] == 0xe9 {
+            insert_le32_bytes(&mut instructions.opcodes[inst_new_index + 1..], jump_dist);
+        } else {
+            insert_le32_bytes(&mut instructions.opcodes[inst_new_index + 2..], jump_dist);
         }
     }
     Ok(instructions)
