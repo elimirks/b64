@@ -101,7 +101,16 @@ impl Instructions {
     }
 
     fn inst_count(&self) -> usize {
-        self.instructions.len()
+        self.inst_offsets.len()
+    }
+
+    fn inst_len_at(&self, inst_index: usize) -> usize {
+        if inst_index == self.inst_offsets.len() - 1 {
+            // Special case
+            self.opcodes.len() - self.inst_offsets[inst_index]
+        } else {
+            self.inst_offsets[inst_index + 1] - self.inst_offsets[inst_index]
+        }
     }
 }
 
@@ -2351,7 +2360,6 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Instructions, Co
     }
     c.drop_scope();
     link_jumps(&mut instructions);
-    validate_instructions(&instructions);
     Ok(instructions)
 }
 
@@ -2767,17 +2775,23 @@ fn gen(
     for (_, instructions) in &mut guard.results {
         for (inst_index, symbol) in instructions.fun_links.iter() {
             let callee_offset = *fun_offsets.get(symbol).unwrap() as i64;
-            let inst_offset = total_offset + offset_after_instruction(instructions, *inst_index as i64);
+            // +1 instruction since rip-relative addressing refers to what the
+            // rip value will be after the linked instruction is executed
+            let inst_offset = total_offset + instructions.inst_offsets[*inst_index + 1] as i64;
+            let jump_dist = callee_offset - inst_offset;
+
+            let call_inst_offset = instructions.inst_offsets[*inst_index];
+            let call_inst_len = instructions.inst_len_at(*inst_index);
+            insert_le32_bytes(&mut instructions.opcodes[call_inst_offset + call_inst_len - 4..], jump_dist);
+
+            // Old method
             let instruction = &mut instructions.instructions[*inst_index];
-            if instruction.is_empty() {
-                panic!("No opcodes for instruction: {:?}", instruction);
-            }
             instruction.truncate(instruction.len() - 4);
-            append_le32_bytes(instruction, callee_offset - inst_offset);
+            append_le32_bytes(instruction, jump_dist);
         }
-        for instruction in instructions.instructions.iter() {
-            all_instructions.extend(instruction.as_slice());
-        }
+
+        validate_instructions(&instructions);
+        all_instructions.extend(instructions.opcodes.as_slice());
         total_offset += instructions.opcodes.len() as i64;
     }
     elf_context.program_size = all_instructions.len() as i64;
