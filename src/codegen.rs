@@ -22,7 +22,9 @@ struct Instructions {
     // `call foo`
     // `mov $foo,%rax`
     // Stores (inst_index, callee_name)
-    fun_links: Vec<(usize, String)>,
+    rip_fun_links: Vec<(usize, String)>,
+    // Absolute-addressed fun links
+    abs_fun_links: Vec<(usize, String)>,
     // List of jump instructions that need linking
     // Stores (inst_index, label_index)
     inst_jumps: Vec<(usize, usize)>,
@@ -41,7 +43,8 @@ impl Instructions {
         Instructions {
             opcodes: vec![],
             inst_offsets: vec![],
-            fun_links: vec![],
+            rip_fun_links: vec![],
+            abs_fun_links: vec![],
             inst_jumps: vec![],
             label_indices: vec![],
             labels: HashMap::new(),
@@ -64,10 +67,14 @@ impl Instructions {
             *offset += base_opcode_offset;
         }
         self.inst_offsets.extend(other.inst_offsets);
-        for inst_link in other.fun_links.iter_mut() {
+        for inst_link in other.rip_fun_links.iter_mut() {
             inst_link.0 += base_inst_offset;
         }
-        self.fun_links.extend(other.fun_links);
+        self.rip_fun_links.extend(other.rip_fun_links);
+        for inst_link in other.abs_fun_links.iter_mut() {
+            inst_link.0 += base_inst_offset;
+        }
+        self.abs_fun_links.extend(other.abs_fun_links);
         for inst_jump in other.inst_jumps.iter_mut() {
             inst_jump.0 += base_inst_offset;
             inst_jump.1 += base_label_offset;
@@ -579,8 +586,8 @@ fn opcode_gen_mov(
                 append_le32_bytes(&mut instructions.opcodes, lhs_offset);
             }
         },
-        // FIXME: This can probably be cleaned up a bit.
-        //        It shares most code with the above match case.
+        // TODO: This can probably be cleaned up a bit.
+        //       It shares most code with the above match case.
         (Loc::Register(lhs_reg), Loc::Stack(rhs_index)) => {
             instructions.opcodes.push(match lhs_reg.is_ext() {
                 true  => 0x4c,
@@ -1535,7 +1542,7 @@ fn gen_call(
         instructions.begin_instruction();
         instructions.opcodes.extend_from_slice(&[0xff, 0xd0]);
     } else {
-        instructions.fun_links.push((instructions.inst_count(), callee.to_string()));
+        instructions.rip_fun_links.push((instructions.inst_count(), callee.to_string()));
         instructions.begin_instruction();
         instructions.opcodes.extend_from_slice(&[0xe8, 0, 0, 0, 0]);
     }
@@ -1613,8 +1620,7 @@ fn gen_reference(
             CompErr::err(pos, format!("Variable cannot be at {:?}!", other))
         }
         Some(ScopeEntry::Fun(_)) => {
-            // FIXME:
-            instructions.fun_links.push((instructions.inst_count(), name.clone()));
+            instructions.abs_fun_links.push((instructions.inst_count(), name.clone()));
             instructions.begin_instruction();
             instructions.opcodes.extend_from_slice(&[0x48, 0xc7, 0xc0, 0, 0, 0, 0]);
             let dest_reg = Reg::Rax;
@@ -1701,7 +1707,7 @@ fn gen_expr_ass(
     }
 }
 
-// FIXME: This register assignment technique is super similar in other places
+// TODO: This register assignment technique is super similar in other places
 // Abstract away!
 fn gen_expr_deref_ass(
     c: &mut FunContext,
@@ -2693,10 +2699,11 @@ fn gen(
         // syscall
         0x0f, 0x05,
     ];
+    let start_size = all_instructions.len() as i64;
 
     let mut total_offset = 0;
     for (_, instructions) in &mut guard.results {
-        for (inst_index, symbol) in instructions.fun_links.iter() {
+        for (inst_index, symbol) in instructions.rip_fun_links.iter() {
             let callee_offset = *fun_offsets.get(symbol).unwrap() as i64;
             // +1 instruction since rip-relative addressing refers to what the
             // rip value will be after the linked instruction is executed
@@ -2706,6 +2713,12 @@ fn gen(
             let call_inst_offset = instructions.inst_offsets[*inst_index];
             let call_inst_len = instructions.inst_len_at(*inst_index);
             insert_le32_bytes(&mut instructions.opcodes[call_inst_offset + call_inst_len - 4..], jump_dist);
+        }
+        for (inst_index, symbol) in instructions.abs_fun_links.iter() {
+            let callee_offset = start_size + elf_context.program_vaddr() + *fun_offsets.get(symbol).unwrap() as i64;
+            let call_inst_offset = instructions.inst_offsets[*inst_index];
+            let call_inst_len = instructions.inst_len_at(*inst_index);
+            insert_le32_bytes(&mut instructions.opcodes[call_inst_offset + call_inst_len - 4..], callee_offset);
         }
         all_instructions.extend(instructions.opcodes.as_slice());
         total_offset += instructions.opcodes.len() as i64;
