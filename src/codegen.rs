@@ -2253,6 +2253,21 @@ fn gen_statement(
     }
 }
 
+fn has_trailing_ret(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::ReturnExpr(_) => true,
+        Statement::Return => true,
+        Statement::Block(statements) => {
+            if let Some(end) = statements.last() {
+                has_trailing_ret(end)
+            } else {
+                false
+            }
+        },
+        _ => false,
+    }
+}
+
 /// Returns the function instructions & number of bytes in the function
 fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Instructions, CompErr> {
     let pos = &function.pos;
@@ -2276,12 +2291,7 @@ fn gen_fun(c: &mut FunContext, function: &RSFunction) -> Result<Instructions, Co
 
     gen_statement(c, &mut instructions, body)?;
 
-    let trailing_ret = match instructions.instructions.last() {
-        Some(instruction) => instruction[0] == 0xc3,
-        _ => false,
-    };
-
-    if !trailing_ret {
+    if !has_trailing_ret(body) {
         gen_return(&mut instructions);
     }
     c.drop_scope();
