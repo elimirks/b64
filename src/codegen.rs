@@ -327,8 +327,6 @@ fn prepass_gen(
     }
     if autos_size > 0 {
         let immediate = 8 * autos_size;
-        let mut opcodes = vec![0x48, 0x81, 0xec];
-        append_le32_bytes(&mut opcodes, immediate);
         opcode_gen_arithmetic(c, instructions, &BinOp::Sub, &immediate.into(), &Reg::Rsp.into());
     }
     Ok(())
@@ -2601,7 +2599,7 @@ fn elf_gen_data(
     (bytes, Arc::new(vaddrs))
 }
 
-fn paddng_for_size(size: i64) -> i64 {
+fn page_padding_for_size(size: i64) -> i64 {
     if size % PAGE_SIZE == 0 {
         0
     } else {
@@ -2742,12 +2740,12 @@ fn gen(
     CompErr::from_io_res(w.write_all(&rodata_bytes))?;
 
     // data
-    padding = paddng_for_size(elf_context.rodata_size);
+    padding = page_padding_for_size(elf_context.rodata_size);
     CompErr::from_io_res(w.write_all(&vec![0; padding as usize]))?;
     CompErr::from_io_res(w.write_all(&data_bytes))?;
 
     // text (opcodes)
-    padding = paddng_for_size(elf_context.data_size);
+    padding = page_padding_for_size(elf_context.data_size);
     CompErr::from_io_res(w.write_all(&vec![0; padding as usize]))?;
     CompErr::from_io_res(w.write_all(&all_instructions))?;
 
