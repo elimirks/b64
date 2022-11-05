@@ -15,4 +15,8 @@ main() {
     assert_eq_int(8, --x);
     assert_eq_int(8, x--);
     assert_eq_int(7, x);
+    assert_eq_int(3, x >> 1);
+    assert_eq_int(14, x << 1);
+    assert_eq_int(-8, ~x);
+    assert_eq_int(-7, -x);
 }
