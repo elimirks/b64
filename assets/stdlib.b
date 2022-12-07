@@ -345,3 +345,71 @@ sys_fork() {
 sys_execve(filename, argv, envp) {
     return(syscall(59, filename, argv, envp));
 }
+
+/* Parses an int out of a string.
+ * Warning: Will return 0 for invalid ints!
+ */
+atoi(s) {
+    auto ptr, len, value 0, isNegative 0;
+    len = strlen(s);
+    ptr = s;
+    if (len == 0) {
+        return(0);
+    }
+    if ((*ptr & 0377) == '-') {
+        isNegative = 1;
+        ptr =+ 1;
+    }
+    while (((*ptr & 0377) >= '0') & ((*ptr & 0377) <= '9')) {
+        value =* 10;
+        value =+ (*ptr & 0377) - '0';
+        ptr =+ 1;
+    }
+    if (isNegative) {
+        return(-value);
+    } else {
+        return(value);
+    }
+}
+
+/*
+ * Similar to the C implementation.
+ * @see https://linux.die.net/man/3/getline
+ */
+getline(buf, buflen, fd) {
+    if (*buf == 0) {
+        /* 32 bytes for the initial buffer */
+        *buflen = 32;
+        *buf = malloc(*buflen / 8);
+    }
+
+    auto bufptr;
+    bufptr = *buf;
+
+    while (1) {
+        auto nread;
+        nread = syscall(0, fd, bufptr, 1);
+        if (nread < 0) {
+            panic("Failed reading file");
+        }
+        if (nread == 0) {
+            *bufptr = 0;
+            auto len;
+            len = bufptr - *buf;
+            if (len == 0) {
+                return(-1);
+            } else {
+                return(len);
+            }
+        } else if ((*bufptr & 0377) == '*n') {
+            *bufptr = 0;
+            return(bufptr - *buf);
+        }
+        bufptr =+ 1;
+        if (bufptr - *buf >= *buflen) {
+            *buflen =+ 32;
+            /* printf("Resized to %d*n", *buflen); */
+            *buf = realloc(*buf, *buflen / 8);
+        }
+    }
+}

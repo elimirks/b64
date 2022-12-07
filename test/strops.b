@@ -55,9 +55,18 @@ test_strcat() {
     );
 }
 
+test_strlen() {
+    assert_eq_int(4, strlen("abcd"));
+    assert_eq_int(4, strlen("abcd*0efg"));
+    assert_eq_int(8, strlen("12345678*0abcd"));
+    assert_eq_int(0, strlen("*012345678"));
+    assert_eq_int(0, strlen(""));
+}
+
 main() {
     test_charlen();
     test_charcmp();
     test_strcmp();
     test_strcat();
+    test_strlen();
 }
