@@ -616,11 +616,10 @@ fn opcode_gen_mov(
             instructions.opcodes.push(lhs_reg.opcode_id() + (rhs_reg.opcode_id() << 3));
         },
         (Loc::Register(lhs_reg), Loc::Indirect(rhs_reg)) => {
-            // TODO: Clean this up. I think I wrote the same match in many places
             instructions.opcodes.push(match (lhs_reg.is_ext(), rhs_reg.is_ext()) {
                 (true, true) => 0x4d,
-                (true, false) => 0x49,
-                (false, true) => 0x4c,
+                (true, false) => 0x4c,
+                (false, true) => 0x49,
                 (false, false) => 0x48,
             });
             instructions.opcodes.push(0x89);

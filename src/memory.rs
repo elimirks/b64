@@ -225,6 +225,26 @@ impl RegSet {
     }
 }
 
+impl fmt::Debug for RegSet {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let r = (0..16).filter_map(|i| {
+            let mask = self.bitmask & (1 << i);
+            if mask != 0 {
+                Some(Reg::from_u16(mask))
+            } else {
+                None
+            }
+        }).fold("".to_owned(), |acc, it| {
+            if acc.is_empty() {
+                format!("{:?}", it)
+            } else {
+                format!("{},{:?}", acc, it)
+            }
+        });
+        write!(f, "RegSet [{}]", r)
+    }
+}
+
 // Where values are located
 #[derive(Clone, PartialEq, Eq)]
 pub enum Loc {
