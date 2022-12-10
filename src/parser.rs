@@ -650,42 +650,10 @@ fn parse_op(c: &mut ParseContext) -> Result<(Pos, Token, Option<BinOp>), CompErr
     Ok((pos, tok, binop))
 }
 
-fn parse_expr_id_unchained(c: &mut ParseContext, id: String) -> Result<Expr, CompErr> {
-    let (pos, tok) = pop_tok(c)?;
-    match tok {
-        // Handle vector index sugar syntax
-        Token::LBracket => {
-            let index_expr = parse_expr(c)?;
-            parse_tok(c, Token::RBracket)?;
-
-            Ok(Expr::Dereference(
-                pos.clone(),
-                Box::new(Expr::BinOperator(
-                    pos.clone(),
-                    BinOp::Add,
-                    Box::new(Expr::Id(pos.clone(), id)),
-                    // Multiply by 8 (aka left shift by 3)
-                    Box::new(Expr::BinOperator(
-                        pos.clone(),
-                        BinOp::ShiftLeft,
-                        Box::new(index_expr),
-                        Box::new(Expr::Int(pos, 3)),
-                    )),
-                )),
-            ))
-        }
-        tok => {
-            push_tok(c, (pos.clone(), tok));
-            Ok(Expr::Id(pos, id))
-        }
-    }
-}
-
 fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
     let (pos, tok) = pop_tok(c)?;
-
     match tok {
-        Token::Id(id) => parse_expr_id_unchained(c, id),
+        Token::Id(id) => Ok(Expr::Id(pos, id)),
         Token::Int(value) => Ok(Expr::Int(pos, value)),
         Token::Char(chars) => Ok(Expr::Int(pos, pack_chars(&chars)[0])),
         Token::Str(value) => {
@@ -730,29 +698,45 @@ fn parse_expr_unchained(c: &mut ParseContext) -> Result<Expr, CompErr> {
 
 fn parse_postfix(c: &mut ParseContext, expr: Expr) -> Result<Expr, CompErr> {
     let (pos, tok) = pop_tok(c)?;
-    match tok {
-        Token::MinusMinus => {
-            let next = parse_postfix(c, expr)?;
-            Ok(Expr::UnaryOperator(
-                pos,
-                UnaryOp::PostDecrement,
-                Box::new(next),
-            ))
-        }
-        Token::PlusPlus => {
-            let next = parse_postfix(c, expr)?;
-            Ok(Expr::UnaryOperator(
-                pos,
-                UnaryOp::PostIncrement,
-                Box::new(next),
-            ))
-        }
-        Token::LParen => parse_expr_call(c, expr),
+    let expr_with_postfix = match tok {
+        Token::MinusMinus => Expr::UnaryOperator(
+            pos,
+            UnaryOp::PostDecrement,
+            Box::new(expr),
+        ),
+        Token::PlusPlus => Expr::UnaryOperator(
+            pos,
+            UnaryOp::PostIncrement,
+            Box::new(expr),
+        ),
+        Token::LParen => parse_expr_call(c, expr)?,
+        // Handle vector index sugar syntax
+        Token::LBracket => {
+            let index_expr = parse_expr(c)?;
+            parse_tok(c, Token::RBracket)?;
+
+            Expr::Dereference(
+                pos.clone(),
+                Box::new(Expr::BinOperator(
+                    pos.clone(),
+                    BinOp::Add,
+                    Box::new(expr),
+                    // Multiply by 8 (aka left shift by 3)
+                    Box::new(Expr::BinOperator(
+                        pos.clone(),
+                        BinOp::ShiftLeft,
+                        Box::new(index_expr),
+                        Box::new(Expr::Int(pos, 3)),
+                    )),
+                )),
+            )
+        },
         _ => {
             push_tok(c, (pos, tok));
-            Ok(expr)
+            return Ok(expr);
         }
-    }
+    };
+    parse_postfix(c, expr_with_postfix)
 }
 
 // Assumes the rparen has already been parsed
@@ -996,4 +980,129 @@ fn parse_file(file_id: usize, path: PathBuf, parse_state: &Arc<(Mutex<ParseState
     }
     guard.running_parsers -= 1;
     cvar.notify_all();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::assert_matches::assert_matches;
+
+    fn context_from_str(s: &str) -> ParseContext {
+        ParseContext {
+            content: s.as_bytes(),
+            offset: 0,
+            file_id: 0,
+            strings: vec![],
+            tok_stack: vec![],
+        }
+    }
+
+    #[test]
+    fn test_expr_simple_add() {
+        assert_matches!(
+            parse_expr(&mut context_from_str("1 + 3")).unwrap(),
+            Expr::BinOperator(
+                _, BinOp::Add, box Expr::Int(_, 1), box Expr::Int(_, 3)
+            )
+        );
+    }
+
+    #[test]
+    fn test_expr_arithmetic_precedence() {
+        assert_matches!(
+            parse_expr(&mut context_from_str("1 + 3 * 2")).unwrap(),
+            Expr::BinOperator(_,
+                BinOp::Add,
+                box Expr::Int(_, 1),
+                box Expr::BinOperator(_,
+                    BinOp::Mul,
+                    box Expr::Int(_, 3),
+                    box Expr::Int(_, 2)
+                )
+            )
+        );
+        assert_matches!(
+            parse_expr(&mut context_from_str("1 * 3 + 2")).unwrap(),
+            Expr::BinOperator(_,
+                BinOp::Add,
+                box Expr::BinOperator(_,
+                    BinOp::Mul,
+                    box Expr::Int(_, 1),
+                    box Expr::Int(_, 3)
+                ),
+                box Expr::Int(_, 2)
+            )
+        );
+    }
+
+    #[test]
+    fn test_expr_dereference() {
+        assert_matches!(
+            parse_expr(&mut context_from_str("v[4]")).unwrap(),
+            Expr::Dereference(_,
+                box Expr::BinOperator(_,
+                    BinOp::Add,
+                    box Expr::Id(_, _),
+                    box Expr::BinOperator(
+                        _,
+                        BinOp::ShiftLeft,
+                        box Expr::Int(_, 4),
+                        box Expr::Int(_, 3)
+                    )
+                )
+            )
+        );
+        // Note: The operator precedence is different than in C
+        // Hack to ignore the `Pos` fields
+        assert_eq!(
+            format!("{:?}", parse_expr(&mut context_from_str("*v[4]"))),
+            format!("{:?}", parse_expr(&mut context_from_str("(*v)[4]")))
+        );
+    }
+
+    #[test]
+    fn test_expr_unary() {
+        assert_matches!(
+            parse_expr(&mut context_from_str("++x")).unwrap(),
+            Expr::UnaryOperator(_,
+                UnaryOp::PreIncrement,
+                box Expr::Id(_, _)
+            )
+        );
+        assert_matches!(
+            parse_expr(&mut context_from_str("x++")).unwrap(),
+            Expr::UnaryOperator(_,
+                UnaryOp::PostIncrement,
+                box Expr::Id(_, _)
+            )
+        );
+        assert_matches!(
+            parse_expr(&mut context_from_str("--x++")).unwrap(),
+            Expr::UnaryOperator(_,
+                UnaryOp::PostIncrement,
+                box Expr::UnaryOperator(_,
+                    UnaryOp::PreDecrement,
+                    box Expr::Id(_, _)
+                )
+            )
+        );
+        assert_matches!(
+            parse_expr(&mut context_from_str("x++--")).unwrap(),
+            Expr::UnaryOperator(_,
+                UnaryOp::PostDecrement,
+                box Expr::UnaryOperator(_,
+                    UnaryOp::PostIncrement,
+                    box Expr::Id(_, _)
+                )
+            )
+        );
+        assert_eq!(
+            format!("{:?}", parse_expr(&mut context_from_str("x++[4]"))),
+            format!("{:?}", parse_expr(&mut context_from_str("(x++)[4]")))
+        );
+        assert_eq!(
+            format!("{:?}", parse_expr(&mut context_from_str("x[4]++"))),
+            format!("{:?}", parse_expr(&mut context_from_str("(x[4])++")))
+        );
+    }
 }

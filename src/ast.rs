@@ -13,7 +13,7 @@ impl Pos {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CompErr {
     pub pos: Option<Pos>,
     pub message: String,
@@ -130,7 +130,7 @@ impl Var {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Expr {
     Id(Pos, String),
     // The second parameter is the unique string ID
@@ -163,6 +163,24 @@ impl GetPos for Expr {
             Expr::Reference(pos, _) => pos.clone(),
             Expr::Dereference(pos, _) => pos.clone(),
             Expr::Cond(pos, _, _, _) => pos.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for Expr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expr::Id(_, id) => write!(f, "Id(_, {id})"),
+            Expr::Str(_, str_id) => write!(f, "Str(_, {str_id})"),
+            Expr::Call(_, fun_expr, arg_exprs) => write!(f, "Call(_, {:?}, {:?})", fun_expr, arg_exprs),
+            Expr::Int(_, value) => write!(f, "Int(_, {value})"),
+            Expr::Assignment(_, id, expr) => write!(f, "Assignment(_, {id}, {:?})", expr),
+            Expr::DerefAssignment(_, lhs, rhs) => write!(f, "DerefAssignment(_, {:?}, {:?})", lhs, rhs),
+            Expr::UnaryOperator(_, op, rhs) => write!(f, "UnaryOperator(_, {:?}, {:?})", op, rhs),
+            Expr::BinOperator(_, op, lhs, rhs) => write!(f, "BinOperator(_, {:?}, {:?}, {:?})", op, lhs, rhs),
+            Expr::Cond(_, cond_expr, t_expr, f_expr) => write!(f, "Cond(_, {:?}, {:?}, {:?})", cond_expr, t_expr, f_expr),
+            Expr::Reference(_, id) => write!(f, "Reference(_, {id})"),
+            Expr::Dereference(_, expr) => write!(f, "Dereference(_, {:?})", expr),
         }
     }
 }

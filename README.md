@@ -81,6 +81,16 @@ argv[0]: /tmp/b64_61992.bin
 argv[1]: hello
 argv[2]: world
 ```
+### Vector dereferences
+In the B spec, it states that `v[n]` will access the nth value of a vector. It also says that `v[n]` is equivalent to `*(v + n)`. Since x86 is byte-level addressed, it's not possible to compile B to x86 without breaking one of these rules.
+
+In this compiler, `v[n]` will access the nth value of a vector, but `*(v + n)` will access the value offset by `n` BYTES from the start of the vector.
+
+Similarly, if you have a vector `v`, and apply an increment `++v`, it will point to the value offset by a signle byte in the vector, *not* the next element in the vector.
+### Unary operator parse order
+In the B spec, it says all unary ops are parsed right to left i.e., `-!x++` is bound `-(!(x++))`. For prefix ops this is fine, but gives weird behaviour with postfix ops.
+
+For example, `x[4]++` would get bound as `(x++)[4]`. So for b64, I made postfix operators bind from left to right instead.
 ## Important differences from C
 ### Vector sizing
 When creating a new vector (called "array" in C), the number provided is the _max index_, not the size.
@@ -121,6 +131,8 @@ This leads to some whitespace dependence to avoid ambiguity. Specifically, `a =*
 Any expression can be called. If it's an expression other than a function name, the expression value will be considered a function pointer.
 
 To create a reference to a function, us the syntax `&fun`.
+### Vector dereferences
+In B, unary operators are "greedy". As such, the following two expressions are equivalent: `*v[4]`, `(*v)[4]`. Whereas in C, `*v[4]` would be the same as `*(v[4])`.
 ## Compiler notes
 ### UTF-8
 - It will mostly work inside comments (except for UTF-8 sequences with trailing `*/` bytes!).

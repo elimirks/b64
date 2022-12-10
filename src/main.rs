@@ -1,3 +1,6 @@
+#![feature(assert_matches)]
+#![feature(box_patterns)]
+
 mod ast;
 mod codegen;
 mod memory;
