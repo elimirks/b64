@@ -11,8 +11,7 @@ use std::thread;
 
 pub struct ParseResult {
     // Stored in order of file_id (in Pos)
-    // Stores (file_name, file_paths)
-    pub file_paths: Vec<(String, PathBuf)>,
+    pub file_paths: Vec<PathBuf>,
     // Stores (string_id, string_chars)
     pub strings: Vec<(usize, Vec<u8>)>,
     pub functions: Vec<RSFunction>,
@@ -818,11 +817,12 @@ fn get_parse_position(content: &Vec<char>, offset: usize) -> (String, usize, usi
     (line.to_string(), row, col)
 }
 
-pub fn print_comp_error(file_paths: &[(String, PathBuf)], err: &CompErr) {
+pub fn print_comp_error(file_paths: &[PathBuf], err: &CompErr) {
     println!("Compile error: {}", err.message);
     match &err.pos {
         Some(pos) => {
-            let (file_name, path_buf) = &file_paths[pos.file_id];
+            let path_buf = &file_paths[pos.file_id];
+            let file_name = path_buf.to_str().unwrap().to_string();
             let content = std::fs::read_to_string(&path_buf).unwrap();
             println!("In file: {}", file_name);
 
@@ -950,8 +950,9 @@ fn unpool_file_path(parse_state: &Arc<(Mutex<ParseState>, Condvar)>) -> Option<(
             return None;
         }
         let res = guard.pop_path_to_parse();
-        if res.is_some() {
-            return res;
+        if let Some((file_id, path)) = res {
+            guard.result.file_paths.push(path.clone());
+            return Some((file_id, path));
         }
         guard = cvar.wait(guard).ok()?;
     }
@@ -959,7 +960,6 @@ fn unpool_file_path(parse_state: &Arc<(Mutex<ParseState>, Condvar)>) -> Option<(
 
 // Parse a file, add to the parse state, and notify the cvar
 fn parse_file(file_id: usize, path: PathBuf, parse_state: &Arc<(Mutex<ParseState>, Condvar)>) {
-    let path_str = path.to_str().unwrap().to_string();
     let content = std::fs::read_to_string(&path).unwrap();
 
     let (mutex, cvar) = parse_state.as_ref();
@@ -984,7 +984,6 @@ fn parse_file(file_id: usize, path: PathBuf, parse_state: &Arc<(Mutex<ParseState
             guard.result.functions.append(&mut statements.functions);
             guard.result.variables.append(&mut statements.variables);
             guard.result.defines.append(&mut statements.defines);
-            guard.result.file_paths.push((path_str, path));
 
             for (string_index, string) in strings.into_iter().enumerate() {
                 let string_id = get_string_id(file_id, string_index);
@@ -993,7 +992,6 @@ fn parse_file(file_id: usize, path: PathBuf, parse_state: &Arc<(Mutex<ParseState
         }
         Err(error) => {
             guard.result.errors.push(error);
-            guard.result.file_paths.push((path_str, path));
         }
     }
     guard.running_parsers -= 1;

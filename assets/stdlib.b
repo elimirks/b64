@@ -1,4 +1,5 @@
 #import "memory.b";
+#import "math.b";
 
 /*
  * Compares 2 strings. Return negative if "s1 < s2"
